@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import torch
 
-from train_kchain import train
+from benchmarks.k_chain.run_models.train_kchain import train
 
 
 def parse_args() -> argparse.Namespace:
