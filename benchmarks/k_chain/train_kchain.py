@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 
-from kchains import as_hippynn_arrays, create_kchains
+from benchmarks.k_chain.generate_data.kchains import as_hippynn_arrays, create_kchains
 
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).with_name(".matplotlib-cache")))

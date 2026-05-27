@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from kchains import KChainGraph, as_hippynn_arrays, create_kchains, pair_distance_matrix
+from benchmarks.k_chain.generate_data.kchains import KChainGraph, as_hippynn_arrays, create_kchains, pair_distance_matrix
 
 
 def parse_args() -> argparse.Namespace:
