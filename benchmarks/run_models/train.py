@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Incompleteness counterexample to train on when --dataset incompleteness.",
     )
-    parser.add_argument("--epochs", type=int, default=5000, help="Number of full-batch training epochs.")
+    parser.add_argument("--epochs", type=int, default=4000, help="Number of full-batch training epochs.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn", help="Network architecture to train.")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate.")

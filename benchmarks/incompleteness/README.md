@@ -56,5 +56,5 @@ Use `--counterexample three_body` to train on only one pair.
 The shared sweep script accepts the same dataset flag:
 
 ```bash
-uv run python benchmarks/run_models/sweep.py --dataset incompleteness --counterexamples two_body three_body four_body_nonchiral four_body_chiral --epochs 2000 --seeds 0 1 2 --interaction-layers 1 2 3 --hard-cutoffs 6.5 10 14
+uv run python benchmarks/run_models/sweep.py --dataset incompleteness --counterexamples two_body three_body four_body_nonchiral four_body_chiral --epochs 2000 --seeds 0 1 2 --interaction-layers 1 2 3 --hard-cutoffs 5 10 14 18
 ```
