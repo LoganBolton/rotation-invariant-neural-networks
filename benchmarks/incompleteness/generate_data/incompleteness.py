@@ -220,6 +220,35 @@ def as_hippynn_arrays(
     }
 
 
+def as_padded_hippynn_arrays(
+    environments: list[IncompletenessEnvironment],
+    *,
+    center: bool = True,
+) -> dict[str, torch.Tensor]:
+    """Stack variable-size environments into padded arrays compatible with HIP-NN keys."""
+
+    if not environments:
+        raise ValueError("Cannot stack an empty environment list.")
+
+    max_nodes = max(env.Z.shape[0] for env in environments)
+    species = torch.zeros((len(environments), max_nodes), dtype=torch.long)
+    positions = torch.zeros((len(environments), max_nodes, 3), dtype=torch.get_default_dtype())
+
+    for sample_index, environment in enumerate(environments):
+        n_nodes = environment.Z.shape[0]
+        species[sample_index, :n_nodes] = environment.Z
+        sample_positions = environment.R
+        if center:
+            sample_positions = sample_positions - sample_positions.mean(dim=0, keepdim=True)
+        positions[sample_index, :n_nodes] = sample_positions
+
+    return {
+        "Z": species,
+        "R": positions,
+        "T": torch.tensor([[env.label] for env in environments], dtype=torch.get_default_dtype()),
+    }
+
+
 def pair_distance_matrix(positions: torch.Tensor) -> torch.Tensor:
     """Dense pairwise distances for a single local environment."""
 

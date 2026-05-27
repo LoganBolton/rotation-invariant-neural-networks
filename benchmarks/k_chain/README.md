@@ -83,6 +83,16 @@ To compare depths, cutoffs, and random seeds:
 uv run python benchmarks/k_chain/run_models/sweep_kchain.py --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
 ```
 
+The training and sweep scripts also accept `--dataset incompleteness` for the
+local-neighborhood counterexamples:
+
+```bash
+uv run python benchmarks/k_chain/run_models/train_kchain.py --dataset incompleteness --epochs 5000
+```
+
+By default this trains on all four incompleteness counterexamples; pass
+`--counterexample three_body` to train on only one pair.
+
 The sweep also accepts `--model hiphop`:
 
 ```bash
@@ -121,3 +131,10 @@ k	class 0 diameter	class 1 diameter    max size
 4	22.47	21.00   23
 5	27.20	26.00
 6	32.02	31.00
+
+
+counterexample	class 0	class 1	max
+two_body	5.00	10.00	10.00
+three_body	14.14	14.14	14.14
+four_body_nonchiral	10.66	10.66	10.66
+four_body_chiral	10.00	10.00	10.00

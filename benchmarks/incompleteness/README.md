@@ -41,3 +41,20 @@ The verifier checks that each pair has matching center-relative body-order
 distance fingerprints at the body order named by the counterexample. This is a
 local diagnostic for the dataset construction, not a claim that a particular
 model will or will not distinguish the pair after training.
+
+## Training
+
+The shared training script lives with the original k-chain benchmark and now
+accepts a dataset flag:
+
+```bash
+uv run python benchmarks/k_chain/run_models/train_kchain.py --dataset incompleteness --epochs 5000
+```
+
+Use `--counterexample three_body` to train on only one pair.
+
+The shared sweep script accepts the same dataset flag:
+
+```bash
+uv run python benchmarks/k_chain/run_models/sweep_kchain.py --dataset incompleteness --counterexamples two_body three_body four_body_nonchiral four_body_chiral --epochs 2000 --seeds 0 1 2 --interaction-layers 1 2 3 --hard-cutoffs 6.5 10 14
+```

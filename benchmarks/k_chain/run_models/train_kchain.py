@@ -1,4 +1,4 @@
-"""Train HIP-NN on the two-sample k-chain distinguishability task."""
+"""Train HIP-NN on two-sample geometric benchmark tasks."""
 
 from __future__ import annotations
 
@@ -9,12 +9,21 @@ import sys
 import warnings
 from pathlib import Path
 
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BENCHMARKS_ROOT = Path(__file__).resolve().parents[2]
+if str(BENCHMARKS_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARKS_ROOT))
 
 import torch
 
-from generate_data.kchains import as_hippynn_arrays, create_kchains
+from incompleteness.generate_data.incompleteness import (
+    COUNTEREXAMPLE_NAMES,
+    as_hippynn_arrays as as_incompleteness_arrays,
+    as_padded_hippynn_arrays as as_padded_incompleteness_arrays,
+    create_all_incompleteness_pairs,
+    create_incompleteness_pair,
+)
+from k_chain.generate_data.kchains import as_hippynn_arrays as as_kchain_arrays
+from k_chain.generate_data.kchains import create_kchains
 
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).with_name(".matplotlib-cache")))
@@ -23,7 +32,14 @@ os.environ.setdefault("HIPPYNN_USE_CUSTOM_KERNELS", "False")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain", help="Benchmark dataset to train on.")
     parser.add_argument("--k", type=int, default=4, help="Number of middle chain nodes.")
+    parser.add_argument(
+        "--counterexample",
+        choices=("all", *COUNTEREXAMPLE_NAMES),
+        default="all",
+        help="Incompleteness counterexample to train on when --dataset incompleteness.",
+    )
     parser.add_argument("--epochs", type=int, default=5000, help="Number of full-batch training epochs.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn", help="Network architecture to train.")
@@ -58,6 +74,21 @@ def resolve_dist_soft_max(args: argparse.Namespace) -> float:
 def set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
+
+
+def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str]:
+    if args.dataset == "k_chain":
+        return as_kchain_arrays(create_kchains(args.k)), f"k={args.k} k-chain pair"
+    if args.dataset == "incompleteness":
+        if args.counterexample == "all":
+            pairs_by_name = create_all_incompleteness_pairs()
+            environments = [environment for name in COUNTEREXAMPLE_NAMES for environment in pairs_by_name[name]]
+            return as_padded_incompleteness_arrays(environments), "all incompleteness counterexamples"
+        return (
+            as_incompleteness_arrays(create_incompleteness_pair(args.counterexample)),
+            f"{args.counterexample} incompleteness pair",
+        )
+    raise ValueError(f"Unknown dataset {args.dataset!r}.")
 
 
 def make_model(args: argparse.Namespace) -> torch.nn.Module:
@@ -108,7 +139,7 @@ def margin_accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor, mar
 def train(args: argparse.Namespace) -> dict[str, object]:
     set_seed(args.seed)
 
-    arrays = as_hippynn_arrays(create_kchains(args.k))
+    arrays, dataset_description = load_dataset(args)
     species = arrays["Z"]
     positions = arrays["R"]
     targets = arrays["T"]
@@ -118,7 +149,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if not args.quiet:
-        print(f"Training {args.model} on k={args.k} k-chain pair")
+        print(f"Training {args.model} on {dataset_description}")
         print(f"Z: {tuple(species.shape)} {species.dtype}; R: {tuple(positions.shape)} {positions.dtype}; T: {targets.squeeze(-1).tolist()}")
         print(
             "Network: "
