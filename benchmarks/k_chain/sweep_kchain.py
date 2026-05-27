@@ -1,0 +1,79 @@
+"""Sweep small HIP-NN configs on the k-chain distinguishability task."""
+
+from __future__ import annotations
+
+import argparse
+from types import SimpleNamespace
+
+import torch
+
+from train_kchain import train
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--k", type=int, nargs="+", default=[2, 3, 4])
+    parser.add_argument("--epochs", type=int, default=3000)
+    parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn")
+    parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
+    parser.add_argument("--interaction-layers", type=int, nargs="+", default=[0, 1, 2, 3, 4])
+    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[10.0, 15.0, 25.0])
+    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--n-atom-layers", type=int, default=2)
+    parser.add_argument("--n-features", type=int, default=32)
+    parser.add_argument("--n-sensitivities", type=int, default=32)
+    parser.add_argument("--dist-soft-min", type=float, default=1.0)
+    parser.add_argument("--l-max", type=int, default=2)
+    parser.add_argument("--n-max", type=int, default=3)
+    parser.add_argument("--success-margin", type=float, default=0.1)
+    parser.add_argument("--log-every", type=int, default=250)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    torch.set_num_threads(1)
+
+    print(f"Sweeping {args.model} on k={args.k} with seeds={args.seeds}")
+    print(f"success requires correct signs with logit margin >= {args.success_margin}")
+    print("successes/trials | k | hard cutoff | layers | final accuracies | margin accuracies | final logits")
+
+    for k in args.k:
+        for hard_cutoff in args.hard_cutoffs:
+            for n_layers in args.interaction_layers:
+                results = []
+                for seed in args.seeds:
+                    train_args = SimpleNamespace(
+                        k=k,
+                        epochs=args.epochs,
+                        seed=seed,
+                        model=args.model,
+                        learning_rate=args.learning_rate,
+                        n_interaction_layers=n_layers,
+                        n_atom_layers=args.n_atom_layers,
+                        n_features=args.n_features,
+                        n_sensitivities=args.n_sensitivities,
+                        dist_soft_min=args.dist_soft_min,
+                        dist_soft_max=6.0 if hard_cutoff <= 6.5 else 0.85 * hard_cutoff,
+                        dist_hard_max=hard_cutoff,
+                        l_max=args.l_max,
+                        n_max=args.n_max,
+                        log_every=args.log_every,
+                        stop_at_accuracy=1.0,
+                        success_margin=args.success_margin,
+                        quiet=True,
+                    )
+                    results.append(train(train_args))
+
+                successes = sum(result["margin_accuracy"] >= 1.0 for result in results)
+                accuracies = [round(result["accuracy"], 3) for result in results]
+                margin_accuracies = [round(result["margin_accuracy"], 3) for result in results]
+                logits = [[round(value, 3) for value in result["logits"]] for result in results]
+                print(
+                    f"{successes}/{len(results)} | {k:2d} | {hard_cutoff:10.2f} | {n_layers:6d} | "
+                    f"{accuracies} | {margin_accuracies} | {logits}"
+                )
+
+
+if __name__ == "__main__":
+    main()

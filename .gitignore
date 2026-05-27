@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 build/
 *.egg-info/*
+.venv/
+.uv-cache/
+.matplotlib-cache/
+**/.matplotlib-cache/
 
 **/*.ipynb_checkpoints/
 **/__pycache__/
