@@ -7,16 +7,14 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-BENCHMARKS_ROOT = Path(__file__).resolve().parents[2]
-K_CHAIN_ROOT = Path(__file__).resolve().parents[1]
-for path in (BENCHMARKS_ROOT, K_CHAIN_ROOT):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+BENCHMARKS_ROOT = Path(__file__).resolve().parents[1]
+if str(BENCHMARKS_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARKS_ROOT))
 
 import torch
 
 from incompleteness.generate_data.incompleteness import COUNTEREXAMPLE_NAMES
-from run_models.train_kchain import train
+from run_models.train import train
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,12 +65,12 @@ def main() -> None:
                 results = []
                 for seed in args.seeds:
                     run_index += 1
-                    # if not args.no_progress:
-                    #     print(
-                    #         f"running {run_index}/{total_runs}: "
-                    #         f"k={k}, cutoff={hard_cutoff:g}, layers={n_layers}, seed={seed}",
-                    #         flush=True,
-                    #     )
+                    if not args.no_progress:
+                        print(
+                            f"running {run_index}/{total_runs}: "
+                            f"{item_header}={dataset_item}, cutoff={hard_cutoff:g}, layers={n_layers}, seed={seed}",
+                            flush=True,
+                        )
                     train_args = SimpleNamespace(
                         dataset=args.dataset,
                         k=dataset_item if args.dataset == "k_chain" else args.k[0],

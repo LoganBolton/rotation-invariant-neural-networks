@@ -1,4 +1,4 @@
-"""Plot sweep results saved from sweep_kchain.py markdown logs."""
+"""Plot sweep results saved from sweep.py markdown logs."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ K_GEOMETRY = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("log_file", type=Path, help="Markdown file containing sweep_kchain.py output.")
+    parser.add_argument("log_file", type=Path, help="Markdown file containing sweep.py output.")
     parser.add_argument("--output", type=Path, default=None, help="Output image path.")
     parser.add_argument("--min-layers", type=int, default=1, help="Minimum interaction-layer count to display.")
     parser.add_argument(
