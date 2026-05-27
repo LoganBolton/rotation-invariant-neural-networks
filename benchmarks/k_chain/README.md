@@ -113,3 +113,11 @@ stricter criteria.
 # Logan Notes
 
 model is able to distinguish with k=3 but NOT with k = 4
+
+
+k	class 0 diameter	class 1 diameter    max size
+2	13.60	11.00   14
+3	17.89	16.00   18
+4	22.47	21.00   23
+5	27.20	26.00
+6	32.02	31.00
