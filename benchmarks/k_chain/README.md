@@ -6,14 +6,14 @@ distinguish the two canonical k-chain geometries.
 The first step is just dataset verification:
 
 ```bash
-uv run python benchmarks/k_chain/verify_dataset.py --k 4
+uv run python benchmarks/k_chain/generate_data/verify_dataset.py --k 4
 ```
 
 To also save a visual plot and verify that the arrays can pass through a small
 HIP-NN scalar readout:
 
 ```bash
-uv run python benchmarks/k_chain/verify_dataset.py --k 4 --plot
+uv run python benchmarks/k_chain/generate_data/verify_dataset.py --k 4 --plot
 ```
 
 The tensors intended for HIP-NN use the usual names:
@@ -45,19 +45,19 @@ it is not evidence that the model can distinguish the two geometries.
 To train the scalar HIP-NN output as a binary logit:
 
 ```bash
-uv run python benchmarks/k_chain/train_kchain.py --k 4 --epochs 5000
+uv run python benchmarks/k_chain/run_models/train_kchain.py --k 4 --epochs 5000
 ```
 
 To try HIP-HOP-NN instead:
 
 ```bash
-uv run python benchmarks/k_chain/train_kchain.py --model hiphop --k 4 --epochs 5000 --l-max 2 --n-max 3
+uv run python benchmarks/k_chain/run_models/train_kchain.py --model hiphop --k 4 --epochs 5000 --l-max 2 --n-max 3
 ```
 
 To try HIP-NN-TS with vector features:
 
 ```bash
-uv run python benchmarks/k_chain/train_kchain.py --model hipnnvec --k 4 --epochs 5000
+uv run python benchmarks/k_chain/run_models/train_kchain.py --model hipnnvec --k 4 --epochs 5000
 ```
 
 This uses the two canonical graphs as one full batch and optimizes
@@ -67,32 +67,32 @@ For the local-chain experiment, keep the default cutoff near the neighbor
 spacing:
 
 ```bash
-uv run python benchmarks/k_chain/train_kchain.py --k 4 --n-interaction-layers 3 --dist-hard-max 6.5
+uv run python benchmarks/k_chain/run_models/train_kchain.py --k 4 --n-interaction-layers 3 --dist-hard-max 6.5
 ```
 
 For a quick sanity check that the model can see nonlocal distances, try a much
 larger cutoff:
 
 ```bash
-uv run python benchmarks/k_chain/train_kchain.py --k 4 --dist-hard-max 30
+uv run python benchmarks/k_chain/run_models/train_kchain.py --k 4 --dist-hard-max 30
 ```
 
 To compare depths, cutoffs, and random seeds:
 
 ```bash
-uv run python benchmarks/k_chain/sweep_kchain.py --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
+uv run python benchmarks/k_chain/run_models/sweep_kchain.py --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
 ```
 
 The sweep also accepts `--model hiphop`:
 
 ```bash
-uv run python benchmarks/k_chain/sweep_kchain.py --model hiphop --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
+uv run python benchmarks/k_chain/run_models/sweep_kchain.py --model hiphop --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
 ```
 
 or `--model hipnnvec`:
 
 ```bash
-uv run python benchmarks/k_chain/sweep_kchain.py --model hipnnvec --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
+uv run python benchmarks/k_chain/run_models/sweep_kchain.py --model hipnnvec --k 3 4 5 --epochs 2000 --seeds 0 1 2 --interaction-layers 3 4 --hard-cutoffs 6.5 30
 ```
 
 The sweep reports both plain sign accuracy and margin accuracy. Margin accuracy
@@ -102,7 +102,7 @@ correct by thresholding while still not being a robust separation.
 To plot a markdown sweep log as accuracy grids:
 
 ```bash
-uv run python benchmarks/k_chain/plot_sweep_results.py benchmarks/k_chain/logs/hiphopnn/training.md
+uv run python benchmarks/k_chain/results/plot_sweep_results.py benchmarks/k_chain/results/hiphopnn/training.md
 ```
 
 The default plot uses final accuracy, where `0.5` is red and `1.0` is green.

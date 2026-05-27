@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from benchmarks.k_chain.run_models.train_kchain import train
+from run_models.train_kchain import train
 
 
 def parse_args() -> argparse.Namespace:

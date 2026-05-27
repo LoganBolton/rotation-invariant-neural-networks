@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from benchmarks.k_chain.generate_data.kchains import KChainGraph, as_hippynn_arrays, create_kchains, pair_distance_matrix
+from generate_data.kchains import KChainGraph, as_hippynn_arrays, create_kchains, pair_distance_matrix
 
 
 def parse_args() -> argparse.Namespace:

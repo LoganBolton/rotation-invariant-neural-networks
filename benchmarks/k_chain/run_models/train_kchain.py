@@ -5,12 +5,16 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import sys
 import warnings
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import torch
 
-from benchmarks.k_chain.generate_data.kchains import as_hippynn_arrays, create_kchains
+from generate_data.kchains import as_hippynn_arrays, create_kchains
 
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).with_name(".matplotlib-cache")))
