@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib",
     "networkx",
     "numpy",
+    "plotly",
     "torch>2.0",
 ]
 
