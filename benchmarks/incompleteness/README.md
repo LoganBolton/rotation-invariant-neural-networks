@@ -36,6 +36,7 @@ The tensors intended for HIP-NN use the usual names:
 - `Z`: integer species, with `0` reserved for padding and `1` for every real toy node.
 - `R`: Cartesian positions centered per environment when stacked for HIP-NN.
 - `T`: binary labels shaped as scalar targets.
+- `central_atom_mask`: padded atom mask selecting node `0` in each environment.
 
 The verifier checks that each pair has matching center-relative body-order
 distance fingerprints at the body order named by the counterexample. This is a
@@ -52,6 +53,12 @@ uv run python benchmarks/run_models/train.py --dataset incompleteness --epochs 5
 ```
 
 Use `--counterexample three_body` to train on only one pair.
+
+To use the central-atom-only hierarchical readout:
+
+```bash
+uv run python benchmarks/run_models/train.py --dataset incompleteness --readout central --epochs 5000
+```
 
 The shared sweep script accepts the same dataset flag:
 

@@ -21,6 +21,7 @@ The tensors intended for HIP-NN use the usual names:
 - `Z`: integer species, with `0` reserved for padding and `1` for every real toy node.
 - `R`: centered Cartesian positions.
 - `T`: binary labels shaped as scalar targets.
+- `central_atom_mask`: padded atom mask selecting the designated readout atom. The default k-chain readout atom is local node `0`.
 
 The reference `edge_index` is included only for diagnostics. Standard HIP-NN
 models build interactions from `R` and ignore graph edges.
@@ -46,6 +47,12 @@ To train the scalar HIP-NN output as a binary logit:
 
 ```bash
 uv run python benchmarks/run_models/train.py --k 4 --epochs 5000
+```
+
+To keep normal HIP-NN message passing but read out only from the designated atom:
+
+```bash
+uv run python benchmarks/run_models/train.py --k 4 --readout central --epochs 5000
 ```
 
 To try HIP-HOP-NN instead:

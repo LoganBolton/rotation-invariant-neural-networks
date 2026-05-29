@@ -35,19 +35,26 @@ class HEnergy(torch.nn.Module):
             torch.nn.Linear(nf, n_target, bias=bias) for nf, bias in zip(feature_sizes, biases)
         )
 
-    def forward(self, all_features, system_index, n_systems):
+    def forward(self, all_features, system_index, n_systems, atom_mask=None):
         """
         Pytorch Enforced Forward function
 
         :param: all_features a list of feature tensors:
         :param: system_index the molecular index for atoms in the batch
         :param: total number of molecules in the batch
+        :param: atom_mask optional atom-indexed mask for selecting atoms that contribute to the system sum
         :return: Total Energy
         """
         if self.first_is_interacting:
             all_features = all_features[1:]
 
         partial_energies = [lay(x) for x, lay in zip(all_features, self.layers)]
+        if atom_mask is not None:
+            atom_mask = atom_mask.to(device=partial_energies[0].device, dtype=partial_energies[0].dtype)
+            if atom_mask.ndim == 1:
+                atom_mask = atom_mask.unsqueeze(1)
+            partial_energies = [x * atom_mask for x in partial_energies]
+
         partial_terms = [self.summer(x, system_index, n_systems) for x in partial_energies]
         partial_sums = [partial_terms[0]]
         z = partial_terms[0]
@@ -60,11 +67,11 @@ class HEnergy(torch.nn.Module):
 
         if self.n_terms > 1:
             partial_esq = [torch.square(x) for x in partial_energies]
-            partial_atom_hier = [x / (x + y) for x, y in zip(partial_esq[1:], partial_esq[:-1])]
-            mol_hier = [self.summer(x, system_index, n_systems)/self.summer(x+y, system_index, n_systems)
+            partial_atom_hier = [torch.nan_to_num(x / (x + y)) for x, y in zip(partial_esq[1:], partial_esq[:-1])]
+            mol_hier = [torch.nan_to_num(self.summer(x, system_index, n_systems)/self.summer(x+y, system_index, n_systems))
                         for x,y in zip(partial_esq[1:], partial_esq[:-1])]
             mol_hier = sum(mol_hier)
-            partial_batch_hier = [x.sum() / (x.sum() + y.sum()) for x, y in zip(partial_esq[1:], partial_esq[:-1])]
+            partial_batch_hier = [torch.nan_to_num(x.sum() / (x.sum() + y.sum())) for x, y in zip(partial_esq[1:], partial_esq[:-1])]
             batch_hier = sum(partial_batch_hier)
             total_atom_hier = sum(partial_atom_hier)
             total_hier = self.summer(total_atom_hier, system_index, n_systems)

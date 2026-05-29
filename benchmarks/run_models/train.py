@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=4000, help="Number of full-batch training epochs.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn", help="Network architecture to train.")
+    parser.add_argument(
+        "--readout",
+        choices=["system", "central"],
+        default="system",
+        help="Use the normal system-summed readout or a central-atom-only readout.",
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate.")
     parser.add_argument("--n-interaction-layers", type=int, default=3, help="HIP-NN interaction layers.")
     parser.add_argument("--n-atom-layers", type=int, default=2, help="Atom layers inside each interaction block.")
@@ -92,7 +98,10 @@ def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str
 
 
 def make_model(args: argparse.Namespace) -> torch.nn.Module:
-    from hippynn.graphs import GraphModule, inputs, networks, targets
+    from hippynn.graphs import GraphModule, IdxType, inputs, networks, targets
+    from hippynn.graphs.indextypes import index_type_coercion
+    from hippynn.graphs.nodes.base import InputNode
+    from hippynn.graphs.nodes.tags import AtomIndexer
 
     dist_soft_max = resolve_dist_soft_max(args)
     network_params = {
@@ -122,6 +131,20 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="HIP-HOP-NN is still in a beta state.*")
         network = network_class("geometric_model", (species, positions), module_kwargs=network_params)
+
+    readout = getattr(args, "readout", "system")
+    if readout == "central":
+        central_atom_mask_input = InputNode(db_name="central_atom_mask", index_state=IdxType.SysAtom)
+        central_atom_mask = index_type_coercion(central_atom_mask_input, IdxType.Atoms, hints=(network,))
+        atom_indexer = network.find_unique_relative(AtomIndexer)
+        logit = targets.HEnergyNode(
+            "central_logit",
+            (network, atom_indexer.system_index, atom_indexer.n_systems, central_atom_mask),
+            module_kwargs={"feature_sizes": network.torch_module.feature_sizes},
+            db_name="T",
+        )
+        return GraphModule([species, positions, central_atom_mask_input], [logit.system_energy])
+
     logit = targets.HEnergyNode("logit", network, db_name="T")
     return GraphModule([species, positions], [logit.system_energy])
 
@@ -143,14 +166,20 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     species = arrays["Z"]
     positions = arrays["R"]
     targets = arrays["T"]
+    readout = getattr(args, "readout", "system")
+    central_atom_mask = arrays.get("central_atom_mask")
+    if readout == "central" and central_atom_mask is None:
+        raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
 
     model = make_model(args)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if not args.quiet:
-        print(f"Training {args.model} on {dataset_description}")
+        print(f"Training {args.model} with {readout} readout on {dataset_description}")
         print(f"Z: {tuple(species.shape)} {species.dtype}; R: {tuple(positions.shape)} {positions.dtype}; T: {targets.squeeze(-1).tolist()}")
+        if readout == "central":
+            print(f"central_atom_mask: {central_atom_mask.tolist()}")
         print(
             "Network: "
             f"{args.n_interaction_layers} interactions, "
@@ -167,7 +196,10 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     final_epoch = None
 
     for epoch in range(1, args.epochs + 1):
-        (logits,) = model(species, positions)
+        if readout == "central":
+            (logits,) = model(species, positions, central_atom_mask)
+        else:
+            (logits,) = model(species, positions)
         loss = loss_fn(logits, targets)
 
         optimizer.zero_grad()
