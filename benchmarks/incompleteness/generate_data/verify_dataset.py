@@ -110,17 +110,29 @@ def verify_pair(name: str, dist_hard_max: float) -> dict[str, object]:
     }
 
 
-def _set_equal_3d_limits(axes, positions_by_sample: torch.Tensor) -> None:
-    limit = _shared_axis_limit(positions_by_sample)
+def _set_equal_3d_limits(axes, limit: float) -> None:
+    from matplotlib.ticker import MultipleLocator
 
     for axis in axes:
         axis.set_xlim(-limit, limit)
         axis.set_ylim(-limit, limit)
         axis.set_zlim(-limit, limit)
+        axis.set_box_aspect((1, 1, 1))
+        axis.xaxis.set_major_locator(MultipleLocator(1))
+        axis.yaxis.set_major_locator(MultipleLocator(1))
+        axis.zaxis.set_major_locator(MultipleLocator(1))
 
 
 def _shared_axis_limit(positions_by_sample: torch.Tensor) -> float:
     return max(float(positions_by_sample.abs().max().item()) * 1.1, 1.0)
+
+
+def _standard_axis_limit(plot_source: str) -> float:
+    all_positions = []
+    for name in COUNTEREXAMPLE_NAMES:
+        environments = create_incompleteness_pair(name)
+        all_positions.append(_plot_positions(environments, plot_source))
+    return _shared_axis_limit(torch.cat(all_positions, dim=1))
 
 
 def _center_neighbor_pairs(positions: torch.Tensor) -> list[tuple[int, int]]:
@@ -165,6 +177,7 @@ def plot_pair_png(
     import matplotlib.pyplot as plt
 
     positions_by_sample = _plot_positions(environments, plot_source)
+    axis_limit = _standard_axis_limit(plot_source)
 
     fig = plt.figure(figsize=(10, 4.8), constrained_layout=True)
     axes = [fig.add_subplot(1, 2, index + 1, projection="3d") for index in range(2)]
@@ -188,7 +201,7 @@ def plot_pair_png(
             positions[0, 0],
             positions[0, 1],
             positions[0, 2],
-            s=360,
+            s=500,
             color="#D55E00",
             edgecolors="#222222",
             linewidths=1.0,
@@ -204,7 +217,7 @@ def plot_pair_png(
                 unchanged_positions[:, 0],
                 unchanged_positions[:, 1],
                 unchanged_positions[:, 2],
-                s=240,
+                s=320,
                 color="#0072B2",
                 edgecolors="#222222",
                 linewidths=0.9,
@@ -218,7 +231,7 @@ def plot_pair_png(
                 changed_positions[:, 0],
                 changed_positions[:, 1],
                 changed_positions[:, 2],
-                s=320,
+                s=440,
                 color="#CC79A7",
                 edgecolors="#222222",
                 linewidths=1.2,
@@ -245,7 +258,7 @@ def plot_pair_png(
         axis.legend(loc="upper left", fontsize=8)
         axis.view_init(elev=20, azim=-55)
 
-    _set_equal_3d_limits(axes, positions_by_sample)
+    _set_equal_3d_limits(axes, axis_limit)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=180)
     plt.close(fig)
@@ -269,7 +282,7 @@ def plot_pair_html(
 
     positions_by_sample = _plot_positions(environments, plot_source)
     source_label = "HIP-NN R" if plot_source == "hippynn" else "raw R"
-    axis_limit = _shared_axis_limit(positions_by_sample)
+    axis_limit = _standard_axis_limit(plot_source)
     changed_nodes = _changed_node_indices(environments)
     fig = make_subplots(
         rows=1,
@@ -287,7 +300,7 @@ def plot_pair_html(
             "#D55E00" if node_index == 0 else "#CC79A7" if node_index in changed_nodes else "#0072B2"
             for node_index in node_indices
         ]
-        sizes = [18 if node_index == 0 else 17 if node_index in changed_nodes else 14 for node_index in node_indices]
+        sizes = [22 if node_index == 0 else 21 if node_index in changed_nodes else 17 for node_index in node_indices]
         hover_text = [
             (
                 f"{environment.name} class {environment.label}<br>"
@@ -325,7 +338,7 @@ def plot_pair_html(
                 marker={"color": colors, "size": sizes, "line": {"color": "#222222", "width": 2}},
                 text=[str(node_index) for node_index in node_indices],
                 textposition="top center",
-                textfont={"size": 15, "color": "#111111"},
+                textfont={"size": 18, "color": "#111111"},
                 customdata=node_indices,
                 hovertext=hover_text,
                 hoverinfo="text",
@@ -342,12 +355,13 @@ def plot_pair_html(
         "gridcolor": "rgb(218,218,218)",
         "zerolinecolor": "rgb(180,180,180)",
         "range": [-axis_limit, axis_limit],
+        "dtick": 1,
     }
     fig.update_layout(
         title=f"{environments[0].name} coordinates",
         margin={"l": 0, "r": 0, "t": 52, "b": 0},
-        scene={"xaxis": axis_style, "yaxis": axis_style, "zaxis": axis_style, "aspectmode": "data"},
-        scene2={"xaxis": axis_style, "yaxis": axis_style, "zaxis": axis_style, "aspectmode": "data"},
+        scene={"xaxis": axis_style, "yaxis": axis_style, "zaxis": axis_style, "aspectmode": "cube"},
+        scene2={"xaxis": axis_style, "yaxis": axis_style, "zaxis": axis_style, "aspectmode": "cube"},
     )
 
     output_file.parent.mkdir(parents=True, exist_ok=True)

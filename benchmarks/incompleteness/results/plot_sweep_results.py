@@ -35,6 +35,13 @@ COUNTEREXAMPLE_GEOMETRY = {
     "four_body_chiral": {"max_diameter": 10.0},
 }
 
+COUNTEREXAMPLE_ORDER = (
+    "two_body",
+    "three_body",
+    "four_body_nonchiral",
+    "four_body_chiral",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -106,7 +113,13 @@ def plot_results(
     if not rows:
         raise ValueError(f"No sweep result rows remain after filtering to layers >= {min_layers}.")
 
-    counterexamples = sorted({str(row["counterexample"]) for row in rows})
+    counterexample_set = {str(row["counterexample"]) for row in rows}
+    counterexamples = [
+        counterexample
+        for counterexample in COUNTEREXAMPLE_ORDER
+        if counterexample in counterexample_set
+    ]
+    counterexamples.extend(sorted(counterexample_set - set(COUNTEREXAMPLE_ORDER)))
     cutoffs = sorted({float(row["cutoff"]) for row in rows})
     layers = sorted({int(row["layers"]) for row in rows})
 
