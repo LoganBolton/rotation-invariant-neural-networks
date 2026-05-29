@@ -1,0 +1,43 @@
+
+Initial Authors (LANL):
+
+Nicholas Lubbers
+Danny Byrd
+Michael Gonzales
+Benjamin Nebgen
+
+Contributors Include:
+
+Nicholas Lubbers (LANL)
+Ying Wai Li (LANL)
+Benjamin Nebgen (LANL)
+Xinyang Li (LANL)
+Guqoing Zhou (LANL, NVIDIA) - PYSEQM Interface and other improvements
+Steven Anaya (LANL) - LAMMPS interface
+Sakib Matin (LANL)
+Emily Shinkle (LANL)
+Michael G. Taylor (LANL)
+Jan Janssen (LANL)
+Cagri Kaymak (LANL)
+Shuhao Zhang (CMU, LANL) - Batched Optimization routines
+Michael Chigaev (LANL, UC Berkeley)
+Andrew Trepagnier (ExxonMobil)
+Austin Rodriguez (Michigan State)
+Cheng-Han Li (LANL)
+
+Also thanks to testing and feedback from:
+
+Brendan Gifford
+Walter Malone
+Richard Messerly
+Chang Liu
+Justin Smith
+Dan Burrill
+Wei Li
+Adela Habib
+David Rosenberger
+Michael Tynes
+Drew Rohskopf
+Neil Mehta
+Alice E A Allen
+

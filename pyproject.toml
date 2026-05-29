@@ -5,7 +5,7 @@ description = "Moment-invariant tools and geometric neural network benchmarks."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "hippynn @ git+https://github.com/lanl/hippynn.git",
+    "hippynn",
     "matplotlib",
     "networkx",
     "numpy",
@@ -15,3 +15,6 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+hippynn = { path = "vendor/hippynn-local", editable = true }

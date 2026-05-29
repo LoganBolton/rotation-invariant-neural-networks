@@ -230,12 +230,33 @@ wheels = [
 
 [[package]]
 name = "hippynn"
-version = "0.1.3.post0.dev22"
-source = { git = "https://github.com/lanl/hippynn.git#989ca769f420e5074a4cbe6f8654b9555924744d" }
+source = { editable = "vendor/hippynn-local" }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "ase", marker = "extra == 'full'" },
+    { name = "ase", marker = "extra == 'tests'" },
+    { name = "graphviz", marker = "extra == 'full'" },
+    { name = "h5py", marker = "extra == 'full'" },
+    { name = "lightning", marker = "extra == 'full'" },
+    { name = "matplotlib", marker = "extra == 'full'" },
+    { name = "numba", marker = "extra == 'full'" },
+    { name = "numpy" },
+    { name = "opt-einsum", marker = "extra == 'full'" },
+    { name = "pytest", marker = "extra == 'tests'", specifier = ">=8.3" },
+    { name = "scipy", marker = "extra == 'full'" },
+    { name = "sphinx", marker = "extra == 'docs'", specifier = ">=8.0" },
+    { name = "sphinx-rtd-theme", marker = "extra == 'docs'", specifier = ">=3.0.0rc1" },
+    { name = "sphinxcontrib-bibtex", marker = "extra == 'docs'", specifier = ">=2.6" },
+    { name = "torch", specifier = ">2.0" },
+    { name = "tqdm", marker = "extra == 'full'" },
+    { name = "tqdm", marker = "extra == 'tests'" },
+]
+provides-extras = ["docs", "tests", "full"]
 
 [[package]]
 name = "jinja2"
@@ -896,7 +917,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hippynn", git = "https://github.com/lanl/hippynn.git" },
+    { name = "hippynn", editable = "vendor/hippynn-local" },
     { name = "matplotlib" },
     { name = "networkx" },
     { name = "numpy" },
