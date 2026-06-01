@@ -2,3 +2,6 @@
 	path = vendor/hippynn-local
 	url = https://github.com/LoganBolton/hippynn.git
 	branch = masked-energy-readout
+[submodule "external/hippynn"]
+	path = external/hippynn
+	url = https://github.com/LoganBolton/hippynn.git
