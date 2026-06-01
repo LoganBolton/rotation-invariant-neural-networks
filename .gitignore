@@ -14,3 +14,4 @@ build/
 **/*.png
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
+benchmarks/incompleteness/generate_data/*.html
