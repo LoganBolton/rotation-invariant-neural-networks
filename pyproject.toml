@@ -17,4 +17,4 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-hippynn = { path = "vendor/hippynn-local", editable = true }
+hippynn = { path = "external/hippynn", editable = true }
