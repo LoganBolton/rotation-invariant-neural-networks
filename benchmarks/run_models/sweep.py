@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--counterexamples", choices=COUNTEREXAMPLE_NAMES, nargs="+", default=list(COUNTEREXAMPLE_NAMES))
     parser.add_argument("--epochs", type=int, default=3000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
+    parser.add_argument("--readout", choices=["system", "central"], default="system")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
     parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 2, 3, 4])
     parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[5.0, 10.0, 14.0, 18.0])
@@ -49,10 +50,14 @@ def main() -> None:
     run_index = 0
 
     if args.dataset == "k_chain":
-        print(f"Sweeping {args.model} on k-chain k={args.k} with seeds={args.seeds}", flush=True)
+        print(f"Sweeping {args.model} with {args.readout} readout on k-chain k={args.k} with seeds={args.seeds}", flush=True)
         item_header = "k"
     else:
-        print(f"Sweeping {args.model} on incompleteness {args.counterexamples} with seeds={args.seeds}", flush=True)
+        print(
+            f"Sweeping {args.model} with {args.readout} readout on incompleteness {args.counterexamples} "
+            f"with seeds={args.seeds}",
+            flush=True,
+        )
         item_header = "counterexample"
     print(f"Using params l-max: {args.l_max} and n-max: {args.n_max}", flush=True)
     print(f"Running {total_runs} trainings: {args.epochs} epochs max each", flush=True)
@@ -78,6 +83,7 @@ def main() -> None:
                         epochs=args.epochs,
                         seed=seed,
                         model=args.model,
+                        readout=args.readout,
                         learning_rate=args.learning_rate,
                         n_interaction_layers=n_layers,
                         n_atom_layers=args.n_atom_layers,

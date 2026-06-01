@@ -76,6 +76,8 @@ def verify_pair(name: str, dist_hard_max: float) -> dict[str, object]:
     assert arrays["Z"].shape == (2, n_nodes)
     assert arrays["R"].shape == (2, n_nodes, 3)
     assert arrays["T"].shape == (2, 1)
+    assert arrays["central_atom_mask"].shape == (2, n_nodes)
+    assert torch.equal(arrays["central_atom_mask"], torch.nn.functional.one_hot(torch.zeros(2, dtype=torch.long), n_nodes).to(arrays["central_atom_mask"].dtype))
     assert torch.equal(arrays["Z"], torch.ones_like(arrays["Z"]))
     assert torch.equal(arrays["T"].squeeze(-1).long(), torch.tensor([0, 1]))
     assert torch.allclose(arrays["R"].mean(dim=1), torch.zeros(2, 3), atol=1e-6)
@@ -381,6 +383,7 @@ def main() -> None:
         print(f"  Z shape: {tuple(arrays['Z'].shape)}, unique species: {torch.unique(arrays['Z']).tolist()}")
         print(f"  R shape: {tuple(arrays['R'].shape)}, per-graph centers: {arrays['R'].mean(dim=1).tolist()}")
         print(f"  T shape: {tuple(arrays['T'].shape)}, labels: {arrays['T'].squeeze(-1).tolist()}")
+        print(f"  central_atom_mask: {arrays['central_atom_mask'].tolist()}")
         print(f"  matching body-order fingerprint entries: {result['signature_count']}")
         if result["next_order_matches"] is not None:
             print(f"  next body-order fingerprint also matches: {result['next_order_matches']}")
