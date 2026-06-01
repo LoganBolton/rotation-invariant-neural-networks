@@ -12,3 +12,5 @@ build/
 **/*.ipynb_checkpoints/
 **/__pycache__/
 **/*.png
+benchmarks/incompleteness/results/
+benchmarks/k_chain/results/
