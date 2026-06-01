@@ -18,3 +18,20 @@ package = false
 
 [tool.uv.sources]
 hippynn = { path = "external/hippynn", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+norecursedirs = [
+    ".git",
+    ".venv",
+    "external",
+    "vendor",
+    "build",
+    "dist",
+]
