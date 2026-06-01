@@ -11,7 +11,7 @@ the geometric GNN dojo
 
 Each pair has two star-shaped local environments centered at node `0`, with
 labels `0` and `1`. The diagnostic `edge_index` stores the star graph only for
-inspection; HIP-NN-style models can use the stacked `Z`, `R`, and `T` arrays.
+inspection
 
 The first step is dataset verification:
 
@@ -38,11 +38,6 @@ The tensors intended for HIP-NN use the usual names:
 - `T`: binary labels shaped as scalar targets.
 - `central_atom_mask`: padded atom mask selecting node `0` in each environment.
 
-The verifier checks that each pair has matching center-relative body-order
-distance fingerprints at the body order named by the counterexample. This is a
-local diagnostic for the dataset construction, not a claim that a particular
-model will or will not distinguish the pair after training.
-
 ## Training
 
 The shared training script lives at the benchmark root and accepts a dataset
@@ -51,8 +46,6 @@ flag:
 ```bash
 uv run python benchmarks/run_models/train.py --dataset incompleteness --epochs 5000
 ```
-
-Use `--counterexample three_body` to train on only one pair.
 
 To use the central-atom-only hierarchical readout:
 
