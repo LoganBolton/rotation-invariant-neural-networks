@@ -58,3 +58,19 @@ The shared sweep script accepts the same dataset flag:
 ```bash
 uv run python benchmarks/run_models/sweep.py --dataset incompleteness --counterexamples two_body three_body four_body_nonchiral four_body_chiral --epochs 2000 --seeds 0 1 2 --interaction-layers 1 2 3 --hard-cutoffs 5 10 14 18
 ```
+
+To run the standard central-readout HIP-NN/HIP-HOP comparison in one command
+and write one markdown log per model config:
+
+```bash
+uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/central_node
+```
+
+The default config bundle writes:
+
+- `l0_n1.md` for HIP-NN
+- `l1_n2.md`
+- `l2_n2.md`
+- `l2_n3.md`
+- `l3_n2.md`
+- `l3_n4.md`
