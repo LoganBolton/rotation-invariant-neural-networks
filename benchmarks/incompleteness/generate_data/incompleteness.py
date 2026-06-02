@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from math import cos, pi, sin
+from math import cos, pi, sin, sqrt
+from typing import Callable
 
 import torch
 
 
 COUNTEREXAMPLE_NAMES = ("two_body", "three_body", "four_body_nonchiral", "four_body_chiral")
+COORDINATE_SET_NAMES = ("separated", "original")
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,7 @@ def _rotate_row(vector: tuple[float, float, float], matrix: torch.Tensor) -> lis
     return (torch.tensor(vector, dtype=matrix.dtype) @ matrix).tolist()
 
 
-def create_two_body_envs() -> list[IncompletenessEnvironment]:
+def create_two_body_envs_original() -> list[IncompletenessEnvironment]:
     """Pair indistinguishable by center-neighbor 2-body scalars."""
 
     return [
@@ -98,7 +100,40 @@ def create_two_body_envs() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_three_body_envs() -> list[IncompletenessEnvironment]:
+def create_two_body_envs_separated() -> list[IncompletenessEnvironment]:
+    """Pair with equal center-neighbor distances and separated leaf-leaf distances."""
+
+    return [
+        _environment(
+            "two_body",
+            2,
+            0,
+            [
+                [0.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0],
+                [0.0, 5.0, 0.0],
+            ],
+        ),
+        _environment(
+            "two_body",
+            2,
+            1,
+            [
+                [0.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0],
+                [-5.0, 0.0, 0.0],
+            ],
+        ),
+    ]
+
+
+def create_two_body_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
+    """Create the 2-body pair for the requested coordinate set."""
+
+    return _coordinate_set_builders(coordinate_set)["two_body"]()
+
+
+def create_three_body_envs_original() -> list[IncompletenessEnvironment]:
     """Pair indistinguishable by centered 3-body distance/angle scalars."""
 
     a_x, a_y, a_z = 5.0, 0.0, 5.0
@@ -133,7 +168,37 @@ def create_three_body_envs() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_four_body_nonchiral_envs() -> list[IncompletenessEnvironment]:
+def create_three_body_envs_separated() -> list[IncompletenessEnvironment]:
+    """Separated pair indistinguishable by centered 3-body distance/angle scalars."""
+
+    radius = 5.0
+    env0 = [
+        [0.0, 0.0, 0.0],
+        [radius * sqrt(3.0 / 7.0), radius * sqrt(3.0) / 7.0, -5.0 * radius / 7.0],
+        [-radius * sqrt(3.0 / 7.0), radius * sqrt(3.0) / 7.0, -5.0 * radius / 7.0],
+        [0.0, radius * 4.0 * sqrt(3.0) / 7.0, radius / 7.0],
+        [0.0, 0.0, radius],
+    ]
+    env1 = [
+        [0.0, 0.0, 0.0],
+        [-radius / sqrt(7.0), radius * sqrt(6.0 / 7.0), 0.0],
+        [-radius / sqrt(7.0), 0.0, radius * sqrt(6.0 / 7.0)],
+        [-radius / sqrt(7.0), 0.0, -radius * sqrt(6.0 / 7.0)],
+        [-radius / sqrt(7.0), -radius * sqrt(6.0 / 7.0), 0.0],
+    ]
+    return [
+        _environment("three_body", 3, 0, env0),
+        _environment("three_body", 3, 1, env1),
+    ]
+
+
+def create_three_body_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
+    """Create the 3-body pair for the requested coordinate set."""
+
+    return _coordinate_set_builders(coordinate_set)["three_body"]()
+
+
+def create_four_body_nonchiral_envs_original() -> list[IncompletenessEnvironment]:
     """Pair indistinguishable by non-oriented centered 4-body scalars."""
 
     q = _rotation_y_matrix(pi / 10)
@@ -159,7 +224,36 @@ def create_four_body_nonchiral_envs() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_four_body_chiral_envs() -> list[IncompletenessEnvironment]:
+def create_four_body_nonchiral_envs_separated() -> list[IncompletenessEnvironment]:
+    """Separated pair indistinguishable by non-oriented centered 4-body scalars."""
+
+    radius = 5.0
+    eps = 0.02
+    y = radius / 3.0
+    rho = radius * 2.0 * sqrt(2.0) / 3.0
+    phis = [
+        0.0,
+        2.0 * pi / 3.0 + eps,
+        4.0 * pi / 3.0 - 0.7 * eps,
+    ]
+    upper_ring = [[rho * cos(phi), y, rho * sin(phi)] for phi in phis]
+    q = _rotation_y_matrix(5.0 * pi / 3.0 + 0.4 * eps)
+    lower_ring = [_rotate_row((x, -yy, z), q) for x, yy, z in upper_ring]
+
+    common = [[0.0, 0.0, 0.0]] + upper_ring + lower_ring
+    return [
+        _environment("four_body_nonchiral", 4, 0, common + [[0.0, radius, 0.0]]),
+        _environment("four_body_nonchiral", 4, 1, common + [[0.0, -radius, 0.0]]),
+    ]
+
+
+def create_four_body_nonchiral_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
+    """Create the nonchiral 4-body pair for the requested coordinate set."""
+
+    return _coordinate_set_builders(coordinate_set)["four_body_nonchiral"]()
+
+
+def create_four_body_chiral_envs_original() -> list[IncompletenessEnvironment]:
     """Pair from the notebook's chiral 4-body counterexample."""
 
     common = [
@@ -174,15 +268,59 @@ def create_four_body_chiral_envs() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_incompleteness_pair(name: str) -> list[IncompletenessEnvironment]:
+def create_four_body_chiral_envs_separated() -> list[IncompletenessEnvironment]:
+    """Separated mirror pair with identical distance signatures and opposite chirality."""
+
+    env0 = [
+        [0.0, 0.0, 0.0],
+        [4.7704242, -1.49614125, 0.06792965],
+        [2.0568787, 2.07317445, 4.05847235],
+        [-2.0992447, -2.54320920, -3.75835850],
+        [-4.1399247, 0.60173985, 2.73841790],
+    ]
+    env1 = [[x, -y, z] for x, y, z in env0]
+    return [
+        _environment("four_body_chiral", 4, 0, env0),
+        _environment("four_body_chiral", 4, 1, env1),
+    ]
+
+
+def create_four_body_chiral_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
+    """Create the chiral 4-body pair for the requested coordinate set."""
+
+    return _coordinate_set_builders(coordinate_set)["four_body_chiral"]()
+
+
+def _coordinate_set_builders(coordinate_set: str) -> dict[str, Callable[[], list[IncompletenessEnvironment]]]:
+    builders = {
+        "separated": {
+            "two_body": create_two_body_envs_separated,
+            "three_body": create_three_body_envs_separated,
+            "four_body_nonchiral": create_four_body_nonchiral_envs_separated,
+            "four_body_chiral": create_four_body_chiral_envs_separated,
+        },
+        "original": {
+            "two_body": create_two_body_envs_original,
+            "three_body": create_three_body_envs_original,
+            "four_body_nonchiral": create_four_body_nonchiral_envs_original,
+            "four_body_chiral": create_four_body_chiral_envs_original,
+        },
+    }
+    try:
+        return builders[coordinate_set]
+    except KeyError as exc:
+        valid = ", ".join(COORDINATE_SET_NAMES)
+        raise ValueError(f"Unknown coordinate_set {coordinate_set!r}. Expected one of: {valid}.") from exc
+
+
+def create_incompleteness_pair(
+    name: str,
+    *,
+    coordinate_set: str = "separated",
+) -> list[IncompletenessEnvironment]:
     """Create one named counterexample pair."""
 
-    builders = {
-        "two_body": create_two_body_envs,
-        "three_body": create_three_body_envs,
-        "four_body_nonchiral": create_four_body_nonchiral_envs,
-        "four_body_chiral": create_four_body_chiral_envs,
-    }
+    builders = _coordinate_set_builders(coordinate_set)
     try:
         return builders[name]()
     except KeyError as exc:
@@ -190,10 +328,13 @@ def create_incompleteness_pair(name: str) -> list[IncompletenessEnvironment]:
         raise ValueError(f"Unknown counterexample {name!r}. Expected one of: {valid}.") from exc
 
 
-def create_all_incompleteness_pairs() -> dict[str, list[IncompletenessEnvironment]]:
+def create_all_incompleteness_pairs(
+    *,
+    coordinate_set: str = "separated",
+) -> dict[str, list[IncompletenessEnvironment]]:
     """Create every incompleteness counterexample pair."""
 
-    return {name: create_incompleteness_pair(name) for name in COUNTEREXAMPLE_NAMES}
+    return {name: create_incompleteness_pair(name, coordinate_set=coordinate_set) for name in COUNTEREXAMPLE_NAMES}
 
 
 def atom_mask_from_local(species: torch.Tensor, local_indices: torch.Tensor | int) -> torch.Tensor:
