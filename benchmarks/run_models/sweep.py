@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import concurrent.futures
+import pprint
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,14 +43,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain")
     parser.add_argument("--k", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--counterexamples", choices=COUNTEREXAMPLE_NAMES, nargs="+", default=list(COUNTEREXAMPLE_NAMES))
-    parser.add_argument("--coordinate-set", choices=("v2", "original"), default="v2")
+    parser.add_argument("--coordinate-set", choices=("v2", "original"), default="original")
     parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
     parser.add_argument("--readout", choices=["system", "central"], default="central")
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
     parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 2, 3, 4])
-    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[5.0, 10.0, 14.0, 18.0])
+    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[4.0, 5.0, 10.0, 14.0])
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--n-atom-layers", type=int, default=2)
     parser.add_argument("--n-features", type=int, default=32)
@@ -125,12 +126,23 @@ def args_for_config(args: argparse.Namespace, model: str, l_max: int, n_max: int
     return config_args
 
 
+def config_dict(args: argparse.Namespace) -> dict[str, object]:
+    config = vars(args).copy()
+    if isinstance(config.get("output_dir"), Path):
+        config["output_dir"] = str(config["output_dir"])
+    return config
+
+
 def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
     torch.set_num_threads(1)
 
     dataset_items = args.k if args.dataset == "k_chain" else args.counterexamples
     total_runs = len(dataset_items) * len(args.hard_cutoffs) * len(args.interaction_layers) * len(args.seeds)
     run_index = 0
+
+    print("Config:", flush=True, file=output)
+    print(pprint.pformat(config_dict(args), sort_dicts=True), flush=True, file=output)
+    print("", flush=True, file=output)
 
     if args.dataset == "k_chain":
         print(
@@ -159,6 +171,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
 
     for dataset_item in dataset_items:
         for hard_cutoff in args.hard_cutoffs:
+            dist_soft_max = None if args.neighborhood_cutoff == "edges" else 6.0 if hard_cutoff <= 6.5 else 0.85 * hard_cutoff
             for n_layers in args.interaction_layers:
                 results = []
                 for seed in args.seeds:
@@ -179,7 +192,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         n_features=args.n_features,
                         n_sensitivities=args.n_sensitivities,
                         dist_soft_min=args.dist_soft_min,
-                        dist_soft_max=6.0 if hard_cutoff <= 6.5 else 0.85 * hard_cutoff,
+                        dist_soft_max=dist_soft_max,
                         dist_hard_max=hard_cutoff,
                         l_max=args.l_max,
                         n_max=args.n_max,
@@ -238,6 +251,10 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
 def main() -> None:
     args = parse_args()
     if args.model_configs is not None:
+        run_model_config_batch(args)
+        return
+    if args.output_dir is not None:
+        args.model_configs = ["default"]
         run_model_config_batch(args)
         return
 

@@ -24,7 +24,14 @@ from benchmarks.incompleteness.generate_data.incompleteness import (  # noqa: E4
     as_padded_hippynn_arrays,
     create_all_incompleteness_pairs,
 )
-from benchmarks.run_models.train import load_dataset, make_model, model_forward_args  # noqa: E402
+from benchmarks.run_models.train import (  # noqa: E402
+    EDGE_NEIGHBORHOOD_DIST_HARD_MAX,
+    load_dataset,
+    make_model,
+    model_forward_args,
+    resolve_dist_hard_max,
+    resolve_dist_soft_max,
+)
 from hippynn.layers.targets import HEnergy  # noqa: E402
 from hippynn.networks.hipnn import Hipnn  # noqa: E402
 
@@ -111,6 +118,17 @@ def test_padded_dataset_central_mask() -> None:
     assert torch.equal(arrays["central_atom_mask"], expected)
     assert arrays["central_atom_mask"].shape == arrays["Z"].shape
     assert torch.equal(arrays["central_atom_mask"].sum(dim=1), torch.ones(len(environments)))
+
+
+def test_edge_neighborhood_uses_nonrestrictive_sensitivity_cutoff() -> None:
+    edge_args = edge_neighborhood_args("hipnn")
+    edge_args.dist_hard_max = 5.0
+    edge_args.dist_soft_max = None
+    cutoff_args = SimpleNamespace(neighborhood_cutoff="cutoff", dist_hard_max=5.0, dist_soft_max=None)
+
+    assert resolve_dist_hard_max(edge_args) == EDGE_NEIGHBORHOOD_DIST_HARD_MAX
+    assert resolve_dist_soft_max(edge_args) == 6.0
+    assert resolve_dist_hard_max(cutoff_args) == 5.0
 
 
 def test_noncentral_features_receive_gradients_through_message_passing() -> None:

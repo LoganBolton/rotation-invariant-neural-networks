@@ -29,6 +29,8 @@ from k_chain.generate_data.kchains import create_kchains
 os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).with_name(".matplotlib-cache")))
 os.environ.setdefault("HIPPYNN_USE_CUSTOM_KERNELS", "False")
 
+EDGE_NEIGHBORHOOD_DIST_HARD_MAX = 1.0e6
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -83,9 +85,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_dist_hard_max(args: argparse.Namespace) -> float:
+    if resolve_neighborhood_cutoff(args) == "edges":
+        return EDGE_NEIGHBORHOOD_DIST_HARD_MAX
+    return args.dist_hard_max
+
+
 def resolve_dist_soft_max(args: argparse.Namespace) -> float:
     if args.dist_soft_max is not None:
         return args.dist_soft_max
+    if resolve_neighborhood_cutoff(args) == "edges":
+        return 6.0
     return 6.0 if args.dist_hard_max <= 6.5 else 0.85 * args.dist_hard_max
 
 
@@ -170,7 +180,7 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
         "n_sensitivities": args.n_sensitivities,
         "dist_soft_min": args.dist_soft_min,
         "dist_soft_max": dist_soft_max,
-        "dist_hard_max": args.dist_hard_max,
+        "dist_hard_max": resolve_dist_hard_max(args),
         "n_interaction_layers": args.n_interaction_layers,
         "n_atom_layers": args.n_atom_layers,
     }
@@ -299,7 +309,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
             "Network: "
             f"{args.n_interaction_layers} interactions, "
             f"{args.n_atom_layers} atom layers, "
-            f"{args.n_features} features, cutoff {args.dist_hard_max}, soft max {resolve_dist_soft_max(args)}"
+            f"{args.n_features} features, cutoff {resolve_dist_hard_max(args)}, soft max {resolve_dist_soft_max(args)}"
         )
         if args.model == "hiphop":
             print(f"HIP-HOP tensors: l_max={args.l_max}, n_max={args.n_max}")
