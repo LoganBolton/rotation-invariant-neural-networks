@@ -248,19 +248,8 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    arrays, _dataset_description = load_dataset(args)
-    species = arrays["Z"]
-    positions = arrays["R"]
+    arrays, _ = load_dataset(args)
     targets = arrays["T"]
-    readout = getattr(args, "readout", "system")
-    neighborhood_cutoff = getattr(args, "neighborhood_cutoff", "cutoff")
-    if neighborhood_cutoff not in {"cutoff", "edges"}:
-        raise ValueError(f"Unknown neighborhood cutoff {neighborhood_cutoff!r}. Expected 'cutoff' or 'edges'.")
-    if neighborhood_cutoff == "edges" and args.dataset != "incompleteness":
-        raise ValueError("Dataset-defined edges are only available for the incompleteness dataset.")
-    central_atom_mask = arrays.get("central_atom_mask")
-    if readout == "central" and central_atom_mask is None:
-        raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
     forward_args = model_forward_args(args, arrays)
 
     model = make_model(args)
