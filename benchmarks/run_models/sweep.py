@@ -42,9 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain")
     parser.add_argument("--k", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--counterexamples", choices=COUNTEREXAMPLE_NAMES, nargs="+", default=list(COUNTEREXAMPLE_NAMES))
+    parser.add_argument("--coordinate-set", choices=("v2", "original"), default="v2")
     parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
     parser.add_argument("--readout", choices=["system", "central"], default="central")
+    parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
     parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 2, 3, 4])
     parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[5.0, 10.0, 14.0, 18.0])
@@ -132,15 +134,16 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
 
     if args.dataset == "k_chain":
         print(
-            f"Sweeping {args.model} with {args.readout} readout on k-chain k={args.k} with seeds={args.seeds}",
+            f"Sweeping {args.model} with {args.readout} readout and {args.neighborhood_cutoff} neighborhood "
+            f"on k-chain k={args.k} with seeds={args.seeds}",
             flush=True,
             file=output,
         )
         item_header = "k"
     else:
         print(
-            f"Sweeping {args.model} with {args.readout} readout on incompleteness {args.counterexamples} "
-            f"with seeds={args.seeds}",
+            f"Sweeping {args.model} with {args.readout} readout and {args.neighborhood_cutoff} neighborhood "
+            f"on {args.coordinate_set} incompleteness {args.counterexamples} with seeds={args.seeds}",
             flush=True,
             file=output,
         )
@@ -164,10 +167,12 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         dataset=args.dataset,
                         k=dataset_item if args.dataset == "k_chain" else args.k[0],
                         counterexample=dataset_item if args.dataset == "incompleteness" else args.counterexamples[0],
+                        coordinate_set=args.coordinate_set,
                         epochs=args.epochs,
                         seed=seed,
                         model=args.model,
                         readout=args.readout,
+                        neighborhood_cutoff=args.neighborhood_cutoff,
                         learning_rate=args.learning_rate,
                         n_interaction_layers=n_layers,
                         n_atom_layers=args.n_atom_layers,

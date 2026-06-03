@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -23,8 +24,29 @@ from benchmarks.incompleteness.generate_data.incompleteness import (  # noqa: E4
     as_padded_hippynn_arrays,
     create_all_incompleteness_pairs,
 )
+from benchmarks.run_models.train import load_dataset, make_model, model_forward_args  # noqa: E402
 from hippynn.layers.targets import HEnergy  # noqa: E402
 from hippynn.networks.hipnn import Hipnn  # noqa: E402
+
+
+def edge_neighborhood_args(model: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        dataset="incompleteness",
+        k=4,
+        counterexample="two_body",
+        model=model,
+        readout="central",
+        neighborhood_cutoff="edges",
+        n_features=4,
+        n_sensitivities=2,
+        dist_soft_min=1.0,
+        dist_soft_max=6.0,
+        dist_hard_max=100.0,
+        n_interaction_layers=2,
+        n_atom_layers=0,
+        l_max=1,
+        n_max=2,
+    )
 
 
 def test_masked_henergy_shapes_and_batched_indices() -> None:
@@ -129,8 +151,32 @@ def test_noncentral_features_receive_gradients_through_message_passing() -> None
     assert features.grad[1].abs().sum() > 0
 
 
+def test_hipnn_edge_neighborhood_forward_shape() -> None:
+    args = edge_neighborhood_args("hipnn")
+    arrays, _description = load_dataset(args)
+    model = make_model(args)
+
+    with torch.no_grad():
+        (logits,) = model(*model_forward_args(args, arrays))
+
+    assert logits.shape == arrays["T"].shape
+
+
+def test_hiphop_edge_neighborhood_forward_shape() -> None:
+    args = edge_neighborhood_args("hiphop")
+    arrays, _description = load_dataset(args)
+    model = make_model(args)
+
+    with torch.no_grad():
+        (logits,) = model(*model_forward_args(args, arrays))
+
+    assert logits.shape == arrays["T"].shape
+
+
 if __name__ == "__main__":
     test_masked_henergy_shapes_and_batched_indices()
     test_masked_henergy_does_not_sum_over_all_atoms()
     test_padded_dataset_central_mask()
     test_noncentral_features_receive_gradients_through_message_passing()
+    test_hipnn_edge_neighborhood_forward_shape()
+    test_hiphop_edge_neighborhood_forward_shape()

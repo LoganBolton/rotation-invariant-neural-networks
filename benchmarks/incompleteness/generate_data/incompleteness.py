@@ -5,13 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import combinations
 from math import cos, pi, sin, sqrt
-from typing import Callable
 
 import torch
 
 
 COUNTEREXAMPLE_NAMES = ("two_body", "three_body", "four_body_nonchiral", "four_body_chiral")
-COORDINATE_SET_NAMES = ("separated", "original")
 
 
 @dataclass(frozen=True)
@@ -100,8 +98,8 @@ def create_two_body_envs_original() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_two_body_envs_separated() -> list[IncompletenessEnvironment]:
-    """Pair with equal center-neighbor distances and separated leaf-leaf distances."""
+def create_two_body_envs_v2() -> list[IncompletenessEnvironment]:
+    """Pair with equal center-neighbor distances and larger leaf-leaf distances."""
 
     return [
         _environment(
@@ -125,12 +123,6 @@ def create_two_body_envs_separated() -> list[IncompletenessEnvironment]:
             ],
         ),
     ]
-
-
-def create_two_body_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
-    """Create the 2-body pair for the requested coordinate set."""
-
-    return _coordinate_set_builders(coordinate_set)["two_body"]()
 
 
 def create_three_body_envs_original() -> list[IncompletenessEnvironment]:
@@ -168,8 +160,8 @@ def create_three_body_envs_original() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_three_body_envs_separated() -> list[IncompletenessEnvironment]:
-    """Separated pair indistinguishable by centered 3-body distance/angle scalars."""
+def create_three_body_envs_v2() -> list[IncompletenessEnvironment]:
+    """V2 pair indistinguishable by centered 3-body distance/angle scalars."""
 
     radius = 5.0
     env0 = [
@@ -190,12 +182,6 @@ def create_three_body_envs_separated() -> list[IncompletenessEnvironment]:
         _environment("three_body", 3, 0, env0),
         _environment("three_body", 3, 1, env1),
     ]
-
-
-def create_three_body_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
-    """Create the 3-body pair for the requested coordinate set."""
-
-    return _coordinate_set_builders(coordinate_set)["three_body"]()
 
 
 def create_four_body_nonchiral_envs_original() -> list[IncompletenessEnvironment]:
@@ -224,8 +210,8 @@ def create_four_body_nonchiral_envs_original() -> list[IncompletenessEnvironment
     ]
 
 
-def create_four_body_nonchiral_envs_separated() -> list[IncompletenessEnvironment]:
-    """Separated pair indistinguishable by non-oriented centered 4-body scalars."""
+def create_four_body_nonchiral_envs_v2() -> list[IncompletenessEnvironment]:
+    """V2 pair indistinguishable by non-oriented centered 4-body scalars."""
 
     radius = 5.0
     eps = 0.02
@@ -247,12 +233,6 @@ def create_four_body_nonchiral_envs_separated() -> list[IncompletenessEnvironmen
     ]
 
 
-def create_four_body_nonchiral_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
-    """Create the nonchiral 4-body pair for the requested coordinate set."""
-
-    return _coordinate_set_builders(coordinate_set)["four_body_nonchiral"]()
-
-
 def create_four_body_chiral_envs_original() -> list[IncompletenessEnvironment]:
     """Pair from the notebook's chiral 4-body counterexample."""
 
@@ -268,8 +248,8 @@ def create_four_body_chiral_envs_original() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_four_body_chiral_envs_separated() -> list[IncompletenessEnvironment]:
-    """Separated mirror pair with identical distance signatures and opposite chirality."""
+def create_four_body_chiral_envs_v2() -> list[IncompletenessEnvironment]:
+    """V2 mirror pair with identical distance signatures and opposite chirality."""
 
     env0 = [
         [0.0, 0.0, 0.0],
@@ -285,42 +265,36 @@ def create_four_body_chiral_envs_separated() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_four_body_chiral_envs(coordinate_set: str = "separated") -> list[IncompletenessEnvironment]:
-    """Create the chiral 4-body pair for the requested coordinate set."""
-
-    return _coordinate_set_builders(coordinate_set)["four_body_chiral"]()
-
-
-def _coordinate_set_builders(coordinate_set: str) -> dict[str, Callable[[], list[IncompletenessEnvironment]]]:
-    builders = {
-        "separated": {
-            "two_body": create_two_body_envs_separated,
-            "three_body": create_three_body_envs_separated,
-            "four_body_nonchiral": create_four_body_nonchiral_envs_separated,
-            "four_body_chiral": create_four_body_chiral_envs_separated,
-        },
-        "original": {
-            "two_body": create_two_body_envs_original,
-            "three_body": create_three_body_envs_original,
-            "four_body_nonchiral": create_four_body_nonchiral_envs_original,
-            "four_body_chiral": create_four_body_chiral_envs_original,
-        },
-    }
-    try:
-        return builders[coordinate_set]
-    except KeyError as exc:
-        valid = ", ".join(COORDINATE_SET_NAMES)
-        raise ValueError(f"Unknown coordinate_set {coordinate_set!r}. Expected one of: {valid}.") from exc
+INCOMPLETENESS_DATASET_BUILDERS = {
+    # coordinate_set selects which version of the incompleteness dataset is created.
+    "v2": {
+        "two_body": create_two_body_envs_v2,
+        "three_body": create_three_body_envs_v2,
+        "four_body_nonchiral": create_four_body_nonchiral_envs_v2,
+        "four_body_chiral": create_four_body_chiral_envs_v2,
+    },
+    "original": {
+        "two_body": create_two_body_envs_original,
+        "three_body": create_three_body_envs_original,
+        "four_body_nonchiral": create_four_body_nonchiral_envs_original,
+        "four_body_chiral": create_four_body_chiral_envs_original,
+    },
+}
 
 
 def create_incompleteness_pair(
     name: str,
     *,
-    coordinate_set: str = "separated",
+    coordinate_set: str = "v2",
 ) -> list[IncompletenessEnvironment]:
     """Create one named counterexample pair."""
 
-    builders = _coordinate_set_builders(coordinate_set)
+    try:
+        builders = INCOMPLETENESS_DATASET_BUILDERS[coordinate_set]
+    except KeyError as exc:
+        valid = ", ".join(INCOMPLETENESS_DATASET_BUILDERS)
+        raise ValueError(f"Unknown coordinate_set {coordinate_set!r}. Expected one of: {valid}.") from exc
+
     try:
         return builders[name]()
     except KeyError as exc:
@@ -330,7 +304,7 @@ def create_incompleteness_pair(
 
 def create_all_incompleteness_pairs(
     *,
-    coordinate_set: str = "separated",
+    coordinate_set: str = "v2",
 ) -> dict[str, list[IncompletenessEnvironment]]:
     """Create every incompleteness counterexample pair."""
 
@@ -367,6 +341,49 @@ def atom_mask_from_local(species: torch.Tensor, local_indices: torch.Tensor | in
     return atom_mask
 
 
+def center_leaf_edge_tensors(
+    environments: list[IncompletenessEnvironment],
+    species: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Build compressed atom-indexed center-leaf edges for each environment."""
+
+    if species.ndim != 2:
+        raise ValueError(f"Expected species to have shape [n_systems, n_atoms_max], got {tuple(species.shape)}.")
+    if species.shape[0] != len(environments):
+        raise ValueError(f"Expected {len(environments)} species batches, got {species.shape[0]}.")
+
+    edge_index_by_env = []
+    atom_offset = 0
+
+    for sample_index, environment in enumerate(environments):
+        n_nodes = environment.Z.shape[0]
+        central_index = environment.central_atom_local_index
+        if central_index < 0 or central_index >= n_nodes:
+            raise ValueError("Central atom local index is outside this environment.")
+        if not torch.equal(species[sample_index, :n_nodes], environment.Z.to(device=species.device)):
+            raise ValueError("Species arrays do not match the provided environments.")
+
+        local_atoms = torch.arange(n_nodes, dtype=torch.long, device=species.device)
+        leaves = local_atoms[local_atoms != central_index]
+        center = torch.full_like(leaves, central_index)
+        local_edges = torch.cat(
+            [
+                torch.stack([center, leaves]),
+                torch.stack([leaves, center]),
+            ],
+            dim=1,
+        )
+        edge_index_by_env.append(local_edges + atom_offset)
+        atom_offset += n_nodes
+
+    if edge_index_by_env:
+        edge_index = torch.cat(edge_index_by_env, dim=1)
+    else:
+        edge_index = torch.empty((2, 0), dtype=torch.long, device=species.device)
+
+    return {"edge_index": edge_index}
+
+
 def as_hippynn_arrays(
     environments: list[IncompletenessEnvironment],
     *,
@@ -393,6 +410,7 @@ def as_hippynn_arrays(
         "R": positions,
         "T": torch.tensor([[env.label] for env in environments], dtype=torch.get_default_dtype()),
         "central_atom_mask": atom_mask_from_local(species, central_local_indices),
+        **center_leaf_edge_tensors(environments, species),
     }
 
 
@@ -426,6 +444,7 @@ def as_padded_hippynn_arrays(
             species,
             torch.tensor([env.central_atom_local_index for env in environments], dtype=torch.long),
         ),
+        **center_leaf_edge_tensors(environments, species),
     }
 
 

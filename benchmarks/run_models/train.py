@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Incompleteness counterexample to train on when --dataset incompleteness.",
     )
+    parser.add_argument(
+        "--coordinate-set",
+        choices=("v2", "original"),
+        default="v2",
+        help="Coordinate set for --dataset incompleteness.",
+    )
     parser.add_argument("--epochs", type=int, default=4000, help="Number of full-batch training epochs.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn", help="Network architecture to train.")
@@ -48,6 +54,12 @@ def parse_args() -> argparse.Namespace:
         choices=["system", "central"],
         default="system",
         help="Use the normal system-summed readout or a central-atom-only readout.",
+    )
+    parser.add_argument(
+        "--neighborhood-cutoff",
+        choices=["cutoff", "edges"],
+        default="cutoff",
+        help="Build interaction neighbors from HIP-NN cutoffs or dataset-defined edges.",
     )
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate.")
     parser.add_argument("--n-interaction-layers", type=int, default=3, help="HIP-NN interaction layers.")
@@ -82,17 +94,62 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
+def requires_pair_coord(args: argparse.Namespace) -> bool:
+    return args.model in {"hipnnvec", "hiphop"}
+
+
+def resolve_neighborhood_cutoff(args: argparse.Namespace) -> str:
+    value = getattr(args, "neighborhood_cutoff", "cutoff")
+    if value not in {"cutoff", "edges"}:
+        raise ValueError(f"Unknown neighborhood cutoff {value!r}. Expected 'cutoff' or 'edges'.")
+    return value
+
+
+def edge_pair_tensors(arrays: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Convert compressed atom-indexed edges into HIP-NN pair tensors."""
+
+    missing = {key for key in ("Z", "R", "edge_index") if key not in arrays}
+    if missing:
+        raise ValueError(f"Explicit neighbor topology requires dataset arrays: {sorted(missing)}.")
+
+    species = arrays["Z"]
+    positions = arrays["R"]
+    edge_index = arrays["edge_index"]
+
+    if edge_index.ndim != 2 or edge_index.shape[0] != 2:
+        raise ValueError(f"Expected edge_index shape [2, n_edges], got {tuple(edge_index.shape)}.")
+
+    real_atom_mask = species != 0
+    real_flat_indices = torch.nonzero(real_atom_mask.reshape(-1), as_tuple=False).squeeze(1)
+    n_real_atoms = real_flat_indices.numel()
+    if edge_index.numel() > 0 and ((edge_index < 0).any() or (edge_index >= n_real_atoms).any()):
+        raise ValueError("edge_index contains compressed atom indices outside the real atom range.")
+
+    pair_first = edge_index[0].to(dtype=torch.long)
+    pair_second = edge_index[1].to(dtype=torch.long)
+    atom_positions = positions.reshape(-1, 3)[real_flat_indices]
+    pair_coord = atom_positions[pair_first] - atom_positions[pair_second]
+
+    return {
+        "pair_first": pair_first,
+        "pair_second": pair_second,
+        "pair_dist": torch.linalg.vector_norm(pair_coord, dim=1),
+        "pair_coord": pair_coord,
+    }
+
+
 def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str]:
     if args.dataset == "k_chain":
         return as_kchain_arrays(create_kchains(args.k)), f"k={args.k} k-chain pair"
     if args.dataset == "incompleteness":
+        coordinate_set = getattr(args, "coordinate_set", "v2")
         if args.counterexample == "all":
-            pairs_by_name = create_all_incompleteness_pairs()
+            pairs_by_name = create_all_incompleteness_pairs(coordinate_set=coordinate_set)
             environments = [environment for name in COUNTEREXAMPLE_NAMES for environment in pairs_by_name[name]]
-            return as_padded_incompleteness_arrays(environments), "all incompleteness counterexamples"
+            return as_padded_incompleteness_arrays(environments), f"all {coordinate_set} incompleteness counterexamples"
         return (
-            as_incompleteness_arrays(create_incompleteness_pair(args.counterexample)),
-            f"{args.counterexample} incompleteness pair",
+            as_incompleteness_arrays(create_incompleteness_pair(args.counterexample, coordinate_set=coordinate_set)),
+            f"{args.counterexample} {coordinate_set} incompleteness pair",
         )
     raise ValueError(f"Unknown dataset {args.dataset!r}.")
 
@@ -101,7 +158,10 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
     from hippynn.graphs import GraphModule, IdxType, inputs, networks, targets
     from hippynn.graphs.indextypes import index_type_coercion
     from hippynn.graphs.nodes.base import InputNode
+    from hippynn.graphs.nodes.indexers import acquire_encoding_padding
     from hippynn.graphs.nodes.tags import AtomIndexer
+
+    neighborhood_cutoff = resolve_neighborhood_cutoff(args)
 
     dist_soft_max = resolve_dist_soft_max(args)
     network_params = {
@@ -127,10 +187,30 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
         )
 
     species = inputs.SpeciesNode(db_name="Z")
-    positions = inputs.PositionsNode(db_name="R")
+    graph_inputs: list[object]
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="HIP-HOP-NN is still in a beta state.*")
-        network = network_class("geometric_model", (species, positions), module_kwargs=network_params)
+        if neighborhood_cutoff == "edges":
+            _encoder, atom_indexer = acquire_encoding_padding(species, network_params["possible_species"])
+            pair_first = InputNode(db_name="pair_first", index_state=IdxType.Pairs)
+            pair_second = InputNode(db_name="pair_second", index_state=IdxType.Pairs)
+            pair_dist = InputNode(db_name="pair_dist", index_state=IdxType.Pairs)
+            network_parents = [
+                atom_indexer.indexed_features,
+                pair_first,
+                pair_second,
+                pair_dist,
+            ]
+            graph_inputs = [species, pair_first, pair_second, pair_dist]
+            if requires_pair_coord(args):
+                pair_coord = InputNode(db_name="pair_coord", index_state=IdxType.Pairs)
+                network_parents.append(pair_coord)
+                graph_inputs.append(pair_coord)
+            network = network_class("geometric_model", tuple(network_parents), module_kwargs=network_params)
+        else:
+            positions = inputs.PositionsNode(db_name="R")
+            network = network_class("geometric_model", (species, positions), module_kwargs=network_params)
+            graph_inputs = [species, positions]
 
     readout = getattr(args, "readout", "system")
     if readout == "central":
@@ -143,10 +223,36 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
             module_kwargs={"feature_sizes": network.torch_module.feature_sizes},
             db_name="T",
         )
-        return GraphModule([species, positions, central_atom_mask_input], [logit.system_energy])
+        return GraphModule([*graph_inputs, central_atom_mask_input], [logit.system_energy])
 
     logit = targets.HEnergyNode("logit", network, db_name="T")
-    return GraphModule([species, positions], [logit.system_energy])
+    return GraphModule(graph_inputs, [logit.system_energy])
+
+
+def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]) -> tuple[torch.Tensor, ...]:
+    neighborhood_cutoff = resolve_neighborhood_cutoff(args)
+    readout = getattr(args, "readout", "system")
+
+    if neighborhood_cutoff == "edges":
+        pairs = edge_pair_tensors(arrays)
+        inputs = [
+            arrays["Z"],
+            pairs["pair_first"],
+            pairs["pair_second"],
+            pairs["pair_dist"],
+        ]
+        if requires_pair_coord(args):
+            inputs.append(pairs["pair_coord"])
+    elif neighborhood_cutoff == "cutoff":
+        inputs = [arrays["Z"], arrays["R"]]
+
+    if readout == "central":
+        central_atom_mask = arrays.get("central_atom_mask")
+        if central_atom_mask is None:
+            raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
+        inputs.append(central_atom_mask)
+
+    return tuple(inputs)
 
 
 def accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor) -> float:
@@ -167,19 +273,28 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     positions = arrays["R"]
     targets = arrays["T"]
     readout = getattr(args, "readout", "system")
+    neighborhood_cutoff = resolve_neighborhood_cutoff(args)
+    if neighborhood_cutoff == "edges" and args.dataset != "incompleteness":
+        raise ValueError("Dataset-defined edges are only available for the incompleteness dataset.")
     central_atom_mask = arrays.get("central_atom_mask")
     if readout == "central" and central_atom_mask is None:
         raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
+    forward_args = model_forward_args(args, arrays)
 
     model = make_model(args)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if not args.quiet:
-        print(f"Training {args.model} with {readout} readout on {dataset_description}")
+        print(
+            f"Training {args.model} with {readout} readout and {neighborhood_cutoff} neighborhood "
+            f"on {dataset_description}"
+        )
         print(f"Z: {tuple(species.shape)} {species.dtype}; R: {tuple(positions.shape)} {positions.dtype}; T: {targets.squeeze(-1).tolist()}")
         if readout == "central":
             print(f"central_atom_mask: {central_atom_mask.tolist()}")
+        if neighborhood_cutoff == "edges":
+            print(f"edges: {arrays['edge_index'].shape[1]}")
         print(
             "Network: "
             f"{args.n_interaction_layers} interactions, "
@@ -196,10 +311,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     final_epoch = None
 
     for epoch in range(1, args.epochs + 1):
-        if readout == "central":
-            (logits,) = model(species, positions, central_atom_mask)
-        else:
-            (logits,) = model(species, positions)
+        (logits,) = model(*forward_args)
         loss = loss_fn(logits, targets)
 
         optimizer.zero_grad()

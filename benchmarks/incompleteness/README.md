@@ -1,6 +1,6 @@
 # Local-neighborhood incompleteness
 
-This directory contains the four local-neighborhood counterexample pairs from
+This directory contains four local-neighborhood counterexample pairs based on
 the geometric GNN dojo
 [incompleteness notebook](https://github.com/chaitjo/geometric-gnn-dojo/blob/main/experiments/incompleteness.ipynb):
 
@@ -10,8 +10,11 @@ the geometric GNN dojo
 - `four_body_chiral`
 
 Each pair has two star-shaped local environments centered at node `0`, with
-labels `0` and `1`. The diagnostic `edge_index` stores the star graph only for
-inspection
+labels `0` and `1`.
+
+By default, the dataset uses the `v2` coordinate set, whose center-leaf distances
+are smaller than leaf-leaf distances. The original notebook-style coordinates
+remain available with `coordinate_set="original"` or `--coordinate-set original`.
 
 The first step is dataset verification:
 
@@ -25,11 +28,20 @@ To verify one pair:
 uv run python benchmarks/incompleteness/generate_data/verify_dataset.py --counterexample three_body
 ```
 
+To verify the original coordinates:
+
+```bash
+uv run python benchmarks/incompleteness/generate_data/verify_dataset.py --coordinate-set original
+```
+
 To also save 3D plots of the counterexample pairs:
 
 ```bash
 uv run python benchmarks/incompleteness/generate_data/verify_dataset.py --plot
 ```
+
+The default plot output for the v2 coordinates is
+`benchmarks/incompleteness/generate_data/v2_visualizations`.
 
 The tensors intended for HIP-NN use the usual names:
 
@@ -37,6 +49,8 @@ The tensors intended for HIP-NN use the usual names:
 - `R`: Cartesian positions centered per environment when stacked for HIP-NN.
 - `T`: binary labels shaped as scalar targets.
 - `central_atom_mask`: padded atom mask selecting node `0` in each environment.
+- `edge_index`: compressed atom-indexed center-leaf edges for explicit edge
+  based message passing.
 
 ## Training
 
@@ -47,10 +61,23 @@ flag:
 uv run python benchmarks/run_models/train.py --dataset incompleteness --epochs 5000
 ```
 
+To train on the original coordinates instead:
+
+```bash
+uv run python benchmarks/run_models/train.py --dataset incompleteness --coordinate-set original --epochs 5000
+```
+
 To use the central-atom-only hierarchical readout:
 
 ```bash
 uv run python benchmarks/run_models/train.py --dataset incompleteness --readout central --epochs 5000
+```
+
+To restrict message passing to the stored center-leaf star graph instead of
+HIP-NN's cutoff-built neighbor graph:
+
+```bash
+uv run python benchmarks/run_models/train.py --dataset incompleteness --neighborhood-cutoff edges --epochs 5000
 ```
 
 The shared sweep script accepts the same dataset flag:

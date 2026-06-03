@@ -8,7 +8,6 @@ from pathlib import Path
 import torch
 
 from incompleteness import (
-    COORDINATE_SET_NAMES,
     COUNTEREXAMPLE_NAMES,
     IncompletenessEnvironment,
     body_order_signature,
@@ -21,7 +20,7 @@ from incompleteness import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--counterexample", choices=COUNTEREXAMPLE_NAMES, default=None)
-    parser.add_argument("--coordinate-set", choices=COORDINATE_SET_NAMES, default="separated")
+    parser.add_argument("--coordinate-set", choices=("v2", "original"), default="v2")
     parser.add_argument(
         "--dist-hard-max",
         type=float,
