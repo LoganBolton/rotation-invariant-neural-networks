@@ -85,36 +85,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_dist_hard_max(args: argparse.Namespace) -> float:
-    if resolve_neighborhood_cutoff(args) == "edges":
-        return EDGE_NEIGHBORHOOD_DIST_HARD_MAX
-    return args.dist_hard_max
-
-
-def resolve_dist_soft_max(args: argparse.Namespace) -> float:
-    if args.dist_soft_max is not None:
-        return args.dist_soft_max
-    if resolve_neighborhood_cutoff(args) == "edges":
-        return 6.0
-    return 6.0 if args.dist_hard_max <= 6.5 else 0.85 * args.dist_hard_max
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    torch.manual_seed(seed)
-
-
-def requires_pair_coord(args: argparse.Namespace) -> bool:
-    return args.model in {"hipnnvec", "hiphop"}
-
-
-def resolve_neighborhood_cutoff(args: argparse.Namespace) -> str:
-    value = getattr(args, "neighborhood_cutoff", "cutoff")
-    if value not in {"cutoff", "edges"}:
-        raise ValueError(f"Unknown neighborhood cutoff {value!r}. Expected 'cutoff' or 'edges'.")
-    return value
-
-
 def edge_pair_tensors(arrays: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     """Convert compressed atom-indexed edges into HIP-NN pair tensors."""
 
@@ -171,16 +141,25 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
     from hippynn.graphs.nodes.indexers import acquire_encoding_padding
     from hippynn.graphs.nodes.tags import AtomIndexer
 
-    neighborhood_cutoff = resolve_neighborhood_cutoff(args)
+    neighborhood_cutoff = getattr(args, "neighborhood_cutoff", "cutoff")
+    if neighborhood_cutoff not in {"cutoff", "edges"}:
+        raise ValueError(f"Unknown neighborhood cutoff {neighborhood_cutoff!r}. Expected 'cutoff' or 'edges'.")
 
-    dist_soft_max = resolve_dist_soft_max(args)
+    dist_hard_max = EDGE_NEIGHBORHOOD_DIST_HARD_MAX if neighborhood_cutoff == "edges" else args.dist_hard_max
+    if args.dist_soft_max is not None:
+        dist_soft_max = args.dist_soft_max
+    elif neighborhood_cutoff == "edges":
+        dist_soft_max = 6.0
+    else:
+        dist_soft_max = 6.0 if args.dist_hard_max <= 6.5 else 0.85 * args.dist_hard_max
+
     network_params = {
         "possible_species": [0, 1],
         "n_features": args.n_features,
         "n_sensitivities": args.n_sensitivities,
         "dist_soft_min": args.dist_soft_min,
         "dist_soft_max": dist_soft_max,
-        "dist_hard_max": resolve_dist_hard_max(args),
+        "dist_hard_max": dist_hard_max,
         "n_interaction_layers": args.n_interaction_layers,
         "n_atom_layers": args.n_atom_layers,
     }
@@ -212,7 +191,7 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
                 pair_dist,
             ]
             graph_inputs = [species, pair_first, pair_second, pair_dist]
-            if requires_pair_coord(args):
+            if args.model in {"hipnnvec", "hiphop"}:
                 pair_coord = InputNode(db_name="pair_coord", index_state=IdxType.Pairs)
                 network_parents.append(pair_coord)
                 graph_inputs.append(pair_coord)
@@ -240,7 +219,9 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
 
 
 def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]) -> tuple[torch.Tensor, ...]:
-    neighborhood_cutoff = resolve_neighborhood_cutoff(args)
+    neighborhood_cutoff = getattr(args, "neighborhood_cutoff", "cutoff")
+    if neighborhood_cutoff not in {"cutoff", "edges"}:
+        raise ValueError(f"Unknown neighborhood cutoff {neighborhood_cutoff!r}. Expected 'cutoff' or 'edges'.")
     readout = getattr(args, "readout", "system")
 
     if neighborhood_cutoff == "edges":
@@ -251,9 +232,9 @@ def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]
             pairs["pair_second"],
             pairs["pair_dist"],
         ]
-        if requires_pair_coord(args):
+        if args.model in {"hipnnvec", "hiphop"}:
             inputs.append(pairs["pair_coord"])
-    elif neighborhood_cutoff == "cutoff":
+    else:
         inputs = [arrays["Z"], arrays["R"]]
 
     if readout == "central":
@@ -265,31 +246,32 @@ def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]
     return tuple(inputs)
 
 
-def accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor) -> float:
-    predictions = (logits >= 0).to(targets.dtype)
-    return float((predictions == targets).to(torch.float32).mean().item())
-
-
-def margin_accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor, margin: float) -> float:
-    signed_targets = targets.mul(2).sub(1)
-    return float((signed_targets * logits >= margin).to(torch.float32).mean().item())
-
-
 def train(args: argparse.Namespace) -> dict[str, object]:
-    set_seed(args.seed)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     arrays, dataset_description = load_dataset(args)
     species = arrays["Z"]
     positions = arrays["R"]
     targets = arrays["T"]
     readout = getattr(args, "readout", "system")
-    neighborhood_cutoff = resolve_neighborhood_cutoff(args)
+    neighborhood_cutoff = getattr(args, "neighborhood_cutoff", "cutoff")
+    if neighborhood_cutoff not in {"cutoff", "edges"}:
+        raise ValueError(f"Unknown neighborhood cutoff {neighborhood_cutoff!r}. Expected 'cutoff' or 'edges'.")
     if neighborhood_cutoff == "edges" and args.dataset != "incompleteness":
         raise ValueError("Dataset-defined edges are only available for the incompleteness dataset.")
     central_atom_mask = arrays.get("central_atom_mask")
     if readout == "central" and central_atom_mask is None:
         raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
     forward_args = model_forward_args(args, arrays)
+
+    dist_hard_max = EDGE_NEIGHBORHOOD_DIST_HARD_MAX if neighborhood_cutoff == "edges" else args.dist_hard_max
+    if args.dist_soft_max is not None:
+        dist_soft_max = args.dist_soft_max
+    elif neighborhood_cutoff == "edges":
+        dist_soft_max = 6.0
+    else:
+        dist_soft_max = 6.0 if args.dist_hard_max <= 6.5 else 0.85 * args.dist_hard_max
 
     model = make_model(args)
     loss_fn = torch.nn.BCEWithLogitsLoss()
@@ -309,7 +291,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
             "Network: "
             f"{args.n_interaction_layers} interactions, "
             f"{args.n_atom_layers} atom layers, "
-            f"{args.n_features} features, cutoff {resolve_dist_hard_max(args)}, soft max {resolve_dist_soft_max(args)}"
+            f"{args.n_features} features, cutoff {dist_hard_max}, soft max {dist_soft_max}"
         )
         if args.model == "hiphop":
             print(f"HIP-HOP tensors: l_max={args.l_max}, n_max={args.n_max}")
@@ -329,8 +311,10 @@ def train(args: argparse.Namespace) -> dict[str, object]:
         optimizer.step()
 
         with torch.no_grad():
-            accuracy = accuracy_from_logits(logits, targets)
-            margin_accuracy = margin_accuracy_from_logits(logits, targets, args.success_margin)
+            predictions = (logits >= 0).to(targets.dtype)
+            accuracy = float((predictions == targets).to(torch.float32).mean().item())
+            signed_targets = targets.mul(2).sub(1)
+            margin_accuracy = float((signed_targets * logits >= args.success_margin).to(torch.float32).mean().item())
 
         final_loss = float(loss.item())
         final_accuracy = accuracy

@@ -80,6 +80,195 @@ HIP-NN's cutoff-built neighbor graph:
 uv run python benchmarks/run_models/train.py --dataset incompleteness --neighborhood-cutoff edges --epochs 5000
 ```
 
+## Explicit Edge Neighborhoods
+
+The `--neighborhood-cutoff edges` mode is the path that tests HIP-NN/HIP-HOP
+when leaf nodes cannot communicate directly with other leaf nodes. It does not
+change the final readout by itself. It changes only the message-passing
+neighborhood used inside the interaction layers.
+
+In this dataset every environment is a star graph:
+
+```text
+leaf 1 <-> center <-> leaf 2
+leaf 3 <-> center <-> leaf 4
+...
+```
+
+There are edges from the center to every leaf and from every leaf back to the
+center. There are no leaf-leaf edges, even if two leaves are close in Cartesian
+space.
+
+The important files are:
+
+- `benchmarks/incompleteness/generate_data/incompleteness.py`: creates the
+  dataset and stores `edge_index`.
+- `benchmarks/run_models/train.py`: converts `edge_index` into HIP-NN pair
+  tensors and builds the model with those pairs as graph inputs.
+- `benchmarks/run_models/sweep.py`: passes `--neighborhood-cutoff edges`
+  through to each training run.
+- `external/hippynn/...`: provides the normal HIP-NN/HIP-HOP network layers and
+  pair-tensor interface. The dataset-specific star graph is not hard-coded in
+  the external hippynn source.
+
+### Dataset Side
+
+Each `IncompletenessEnvironment` stores:
+
+- `Z`: node species.
+- `R`: node positions.
+- `T`: the binary label, added when environments are stacked into HIP-NN arrays.
+- `central_atom_local_index`: currently node `0`.
+- `edge_index`: the local star-graph edges for that environment.
+
+`star_edge_index(n_nodes)` builds a bidirectional center-leaf edge list for one
+environment. For example, with three nodes it returns:
+
+```text
+0 -> 1
+0 -> 2
+1 -> 0
+2 -> 0
+```
+
+When multiple environments are batched together, `center_leaf_edge_tensors`
+converts those local edges into one global compressed atom index. "Compressed"
+means the indices count only real atoms, after padding atoms have been removed.
+For padded batches, this matters because the HIP-NN pair tensors operate over
+the flattened real-atom representation, not over padded `[system, atom]`
+coordinates.
+
+The final arrays include:
+
+```python
+{
+    "Z": species,
+    "R": positions,
+    "T": targets,
+    "central_atom_mask": central_atom_mask,
+    "edge_index": edge_index,
+}
+```
+
+### Training Side
+
+The training script has two neighborhood modes:
+
+- `--neighborhood-cutoff cutoff`: the default HIP-NN behavior. The graph receives
+  `Z` and `R`, and hippynn builds neighbors from interatomic distances and the
+  hard cutoff.
+- `--neighborhood-cutoff edges`: the benchmark behavior for this experiment. The
+  graph receives `Z`, `pair_first`, `pair_second`, `pair_dist`, and, for HIP-HOP
+  or HIPNNVec, `pair_coord`.
+
+`edge_pair_tensors(arrays)` is the bridge between the dataset and HIP-NN. It:
+
+1. Checks that `Z`, `R`, and `edge_index` are present.
+2. Builds the flattened list of real atoms from `Z != 0`.
+3. Verifies that `edge_index` points only to valid real atoms.
+4. Splits `edge_index` into `pair_first` and `pair_second`.
+5. Computes `pair_coord = R[pair_first] - R[pair_second]`.
+6. Computes `pair_dist = ||pair_coord||`.
+
+Those tensors are then passed directly into the graph as `InputNode`s with
+`IdxType.Pairs`. This bypasses hippynn's usual cutoff-based pair construction.
+
+For scalar HIP-NN, the network parents are:
+
+```python
+indexed_features, pair_first, pair_second, pair_dist
+```
+
+For HIP-HOP and HIPNNVec, the network also needs directional information:
+
+```python
+indexed_features, pair_first, pair_second, pair_dist, pair_coord
+```
+
+### Why The Hard Cutoff Is Still Set In Edges Mode
+
+Even in `edges` mode, the HIP-NN/HIP-HOP network still has sensitivity functions
+that use `dist_hard_max` and `dist_soft_max`. In cutoff mode, `dist_hard_max`
+does two jobs:
+
+1. It decides which atom pairs exist.
+2. It shapes the distance sensitivity cutoff inside the model.
+
+In edges mode, job 1 is handled by `edge_index`, so distance should not remove an
+edge. To avoid accidentally suppressing long explicit edges, `train.py` resolves
+the hard cutoff to a large value for edge neighborhoods:
+
+```python
+EDGE_NEIGHBORHOOD_DIST_HARD_MAX = 1.0e6
+```
+
+That makes the sensitivity cutoff effectively nonrestrictive for these toy
+geometries. The swept `hard_cutoff` values can still appear in the markdown logs,
+but in edge mode they are no longer deciding which messages exist.
+
+### Sweep Side
+
+The sweep script exposes the same flag:
+
+```bash
+uv run python benchmarks/run_models/sweep.py \
+  --dataset incompleteness \
+  --coordinate-set original \
+  --readout system \
+  --neighborhood-cutoff edges \
+  --output-dir benchmarks/incompleteness/results/system_original_edges
+```
+
+When `--output-dir` is provided without `--model-configs`, the sweep runs the
+default model bundle and writes one markdown file per model config.
+
+In edge mode, `sweep.py` passes `dist_soft_max=None` into `train.py`, so the
+training script can apply the edge-mode defaults consistently.
+
+### What This Tests
+
+The purpose of this mode is to block direct leaf-leaf communication while still
+allowing every leaf to talk to the center. With more than one interaction layer,
+information can travel along paths such as:
+
+```text
+leaf A -> center -> leaf B
+```
+
+but there is still no direct message:
+
+```text
+leaf A -> leaf B
+```
+
+This is different from the central readout mask. The central readout mask changes
+which atom features contribute to the final output. Edge neighborhoods change
+which atoms can exchange information inside each interaction layer. These two
+features can be used independently:
+
+- `--readout central` controls the output aggregation.
+- `--neighborhood-cutoff edges` controls the message-passing graph.
+
+### Tests
+
+The edge behavior is covered in `tests/test_incompleteness_dataset.py`.
+
+The tests check that:
+
+- `edge_index` has shape `[2, n_edges]` and integer dtype.
+- Every edge stays inside a single environment.
+- Every edge touches the central atom.
+- No edge connects one leaf to another leaf.
+- Padding atoms are never referenced.
+- `edge_pair_tensors` produces `pair_first`, `pair_second`, `pair_coord`, and
+  `pair_dist` consistent with `edge_index` and `R`.
+
+The most useful command for this area is:
+
+```bash
+uv run pytest tests/test_incompleteness_dataset.py tests/test_central_readout.py
+```
+
 The shared sweep script accepts the same dataset flag:
 
 ```bash
