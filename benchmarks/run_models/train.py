@@ -78,10 +78,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dist-hard-max", type=float, default=6.5)
     parser.add_argument("--l-max", type=int, default=2, help="HIP-HOP angular order.")
     parser.add_argument("--n-max", type=int, default=3, help="HIP-HOP radial tensor order.")
-    parser.add_argument("--log-every", type=int, default=250, help="Print progress every N epochs.")
     parser.add_argument("--stop-at-accuracy", type=float, default=1.0, help="Early-stop once this margin accuracy is reached.")
     parser.add_argument("--success-margin", type=float, default=0.1, help="Report margin accuracy using this logit margin.")
-    parser.add_argument("--quiet", action="store_true", help="Only print the final result.")
     return parser.parse_args()
 
 
@@ -250,7 +248,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    arrays, dataset_description = load_dataset(args)
+    arrays, _dataset_description = load_dataset(args)
     species = arrays["Z"]
     positions = arrays["R"]
     targets = arrays["T"]
@@ -265,36 +263,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
     forward_args = model_forward_args(args, arrays)
 
-    dist_hard_max = EDGE_NEIGHBORHOOD_DIST_HARD_MAX if neighborhood_cutoff == "edges" else args.dist_hard_max
-    if args.dist_soft_max is not None:
-        dist_soft_max = args.dist_soft_max
-    elif neighborhood_cutoff == "edges":
-        dist_soft_max = 6.0
-    else:
-        dist_soft_max = 6.0 if args.dist_hard_max <= 6.5 else 0.85 * args.dist_hard_max
-
     model = make_model(args)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-
-    if not args.quiet:
-        print(
-            f"Training {args.model} with {readout} readout and {neighborhood_cutoff} neighborhood "
-            f"on {dataset_description}"
-        )
-        print(f"Z: {tuple(species.shape)} {species.dtype}; R: {tuple(positions.shape)} {positions.dtype}; T: {targets.squeeze(-1).tolist()}")
-        if readout == "central":
-            print(f"central_atom_mask: {central_atom_mask.tolist()}")
-        if neighborhood_cutoff == "edges":
-            print(f"edges: {arrays['edge_index'].shape[1]}")
-        print(
-            "Network: "
-            f"{args.n_interaction_layers} interactions, "
-            f"{args.n_atom_layers} atom layers, "
-            f"{args.n_features} features, cutoff {dist_hard_max}, soft max {dist_soft_max}"
-        )
-        if args.model == "hiphop":
-            print(f"HIP-HOP tensors: l_max={args.l_max}, n_max={args.n_max}")
 
     final_loss = None
     final_accuracy = None
@@ -322,18 +293,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
         final_logits = logits.detach().squeeze(-1)
         final_epoch = epoch
 
-        should_log = epoch == 1 or epoch % args.log_every == 0 or margin_accuracy >= args.stop_at_accuracy
-        if should_log and not args.quiet:
-            probs = torch.sigmoid(final_logits)
-            print(
-                f"epoch {epoch:5d} | loss {final_loss:.6f} | acc {accuracy:.3f} | "
-                f"margin_acc {margin_accuracy:.3f} | "
-                f"logits {final_logits.tolist()} | probs {probs.tolist()}"
-            )
-
         if margin_accuracy >= args.stop_at_accuracy:
-            if not args.quiet:
-                print(f"Reached margin accuracy {margin_accuracy:.3f}; stopping at epoch {epoch}.")
             break
 
     result = {
@@ -344,25 +304,17 @@ def train(args: argparse.Namespace) -> dict[str, object]:
         "logits": final_logits.tolist(),
     }
 
-    if not args.quiet:
-        print("Final:")
-        print(f"  loss: {final_loss:.6f}")
-        print(f"  accuracy: {final_accuracy:.3f}")
-        print(f"  margin accuracy @ {args.success_margin}: {final_margin_accuracy:.3f}")
-        print(f"  logits: {final_logits.tolist()}")
-
     return result
 
 
 def main() -> None:
     args = parse_args()
     result = train(args)
-    if args.quiet:
-        print(
-            f"epoch {result['epoch']} | loss {result['loss']:.6f} | "
-            f"acc {result['accuracy']:.3f} | margin_acc {result['margin_accuracy']:.3f} | "
-            f"logits {result['logits']}"
-        )
+    print(
+        f"epoch {result['epoch']} | loss {result['loss']:.6f} | "
+        f"acc {result['accuracy']:.3f} | margin_acc {result['margin_accuracy']:.3f} | "
+        f"logits {result['logits']}"
+    )
 
 
 if __name__ == "__main__":

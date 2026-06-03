@@ -196,10 +196,8 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         dist_hard_max=hard_cutoff,
                         l_max=args.l_max,
                         n_max=args.n_max,
-                        log_every=args.log_every,
                         stop_at_accuracy=1.0,
                         success_margin=args.success_margin,
-                        quiet=True,
                     )
                     results.append(train(train_args))
 
