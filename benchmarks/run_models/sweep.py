@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
     parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 2, 3, 4])
-    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[4.0, 5.0, 10.0, 14.0])
+    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[4.0, 5.0, 5.6, 10.0, 14.0])
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--n-atom-layers", type=int, default=2)
     parser.add_argument("--n-features", type=int, default=32)

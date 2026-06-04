@@ -230,7 +230,7 @@ def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]
             pairs["pair_second"],
             pairs["pair_dist"],
         ]
-        if args.model in {"hipnnvec", "hiphop"}:
+        if args.model in {"hiphop"}:
             inputs.append(pairs["pair_coord"])
     else:
         inputs = [arrays["Z"], arrays["R"]]

@@ -67,6 +67,19 @@ def parse_args() -> argparse.Namespace:
         default="accuracy",
         help="Value to color and annotate in each grid cell.",
     )
+    parser.add_argument(
+        "--cutoffs",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Only display these hard cutoff values.",
+    )
+    parser.add_argument(
+        "--hide-max-diameter",
+        action="store_true",
+        help="Do not include max diameter annotations in counterexample titles.",
+    )
+    parser.add_argument("--no-title", action="store_true", help="Do not draw the plot title.")
     return parser.parse_args()
 
 
@@ -124,7 +137,7 @@ def parse_results(log_file: Path) -> list[dict[str, float | str]]:
                 "counterexample": match.group("counterexample").strip(),
                 "cutoff": float(match.group("cutoff")),
                 "layers": int(match.group("layers")),
-                "accuracy": success_rate,
+                "accuracy": float(np.mean(accuracies)),
                 "margin_accuracy": float(np.mean(margin_accuracies)),
                 "success_rate": success_rate,
             }
@@ -134,6 +147,36 @@ def parse_results(log_file: Path) -> list[dict[str, float | str]]:
         raise ValueError(f"No sweep result rows found in {log_file}.")
 
     return rows
+
+
+def filter_cutoffs(
+    rows: list[dict[str, float | str]],
+    cutoffs: list[float] | None,
+) -> list[dict[str, float | str]]:
+    if cutoffs is None:
+        return rows
+
+    cutoff_set = set(cutoffs)
+    return [row for row in rows if float(row["cutoff"]) in cutoff_set]
+
+
+def metric_colormap(metric: str) -> mcolors.Colormap:
+    if metric in {"accuracy", "success_rate"}:
+        return mcolors.ListedColormap(["#c62828", "#2e7d32"])
+    return mcolors.LinearSegmentedColormap.from_list(
+        "failure_to_success",
+        ["#c62828", "#f7f7f7", "#2e7d32"],
+    )
+
+
+def metric_norm(metric: str) -> mcolors.Normalize:
+    if metric in {"accuracy", "success_rate"}:
+        return mcolors.BoundaryNorm([-0.5, 0.999999, 1.5], 2)
+    return mcolors.Normalize(vmin=0.5, vmax=1.0)
+
+
+def square_cells(average_cutoffs: bool, cutoffs: list[float | str]) -> bool:
+    return average_cutoffs or len(cutoffs) == 1
 
 
 def ordered_items(rows_by_model: list[tuple[str, list[dict[str, float | str]]]]) -> list[str]:
@@ -157,10 +200,10 @@ def ordered_items(rows_by_model: list[tuple[str, list[dict[str, float | str]]]])
     return ordered + numeric + text
 
 
-def item_title(item: str) -> str:
+def item_title(item: str, hide_max_diameter: bool) -> str:
     geometry = COUNTEREXAMPLE_GEOMETRY.get(item)
     title = item.replace("_", " ")
-    if geometry is not None:
+    if geometry is not None and not hide_max_diameter:
         title += f"\nmax diameter: {geometry['max_diameter']:.2f}"
     elif item.isdigit():
         title = f"k={item}"
@@ -174,6 +217,8 @@ def plot_results(
     min_layers: int,
     model_label: str,
     average_cutoffs: bool,
+    hide_max_diameter: bool,
+    no_title: bool,
 ) -> None:
     rows = [row for row in rows if int(row["layers"]) >= min_layers]
     if not rows:
@@ -192,10 +237,8 @@ def plot_results(
         squeeze=False,
     )
 
-    cmap = mcolors.LinearSegmentedColormap.from_list(
-        "failure_to_success",
-        ["#c62828", "#f7f7f7", "#2e7d32"],
-    )
+    cmap = metric_colormap(metric)
+    norm = metric_norm(metric)
 
     for axis, counterexample in zip(axes[0], counterexamples):
         grid = np.full((len(cutoffs), len(layers)), np.nan)
@@ -224,13 +267,12 @@ def plot_results(
         image = axis.imshow(
             grid,
             cmap=cmap,
-            vmin=0.0 if metric in {"accuracy", "success_rate"} else 0.5,
-            vmax=1.0,
+            norm=norm,
             origin="lower",
-            aspect="equal" if average_cutoffs else "auto",
+            aspect="equal" if square_cells(average_cutoffs, cutoffs) else "auto",
         )
 
-        axis.set_title(item_title(counterexample))
+        axis.set_title(item_title(counterexample, hide_max_diameter))
 
         axis.set_xlabel("interaction layers")
         axis.set_xticks(range(len(layers)), layers)
@@ -262,7 +304,8 @@ def plot_results(
                     fontweight="bold",
                 )
 
-    fig.suptitle(f"{model_label} {metric.replace('_', ' ')}")
+    if not no_title:
+        fig.suptitle(f"{model_label} {metric.replace('_', ' ')}")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=180)
@@ -275,6 +318,8 @@ def plot_combined_results(
     output_file: Path,
     min_layers: int,
     average_cutoffs: bool,
+    hide_max_diameter: bool,
+    no_title: bool,
 ) -> None:
     filtered_rows_by_model = [
         (model_label, [row for row in rows if int(row["layers"]) >= min_layers])
@@ -307,20 +352,19 @@ def plot_combined_results(
     n_models = len(filtered_rows_by_model)
     n_items = len(items)
     fig_width = max(2.8 * n_items + 1.8, 7.0)
-    fig_height = max((0.9 if average_cutoffs else 2.15) * n_models + 1.0, 3.2)
+    use_square_cells = square_cells(average_cutoffs, cutoffs)
+    fig_height = max((0.9 if use_square_cells else 2.15) * n_models + 1.0, 3.2)
     fig, axes = plt.subplots(
         n_models,
         n_items,
         figsize=(fig_width, fig_height),
         constrained_layout=True,
-        gridspec_kw={"hspace": 0.04 if average_cutoffs else 0.18},
+        gridspec_kw={"hspace": 0.04 if use_square_cells else 0.18},
         squeeze=False,
     )
 
-    cmap = mcolors.LinearSegmentedColormap.from_list(
-        "failure_to_success",
-        ["#c62828", "#f7f7f7", "#2e7d32"],
-    )
+    cmap = metric_colormap(metric)
+    norm = metric_norm(metric)
     image = None
 
     for y_model, (model_label, rows) in enumerate(filtered_rows_by_model):
@@ -351,14 +395,13 @@ def plot_combined_results(
             image = axis.imshow(
                 grid,
                 cmap=cmap,
-                vmin=0.0 if metric in {"accuracy", "success_rate"} else 0.5,
-                vmax=1.0,
+                norm=norm,
                 origin="lower",
-                aspect="equal" if average_cutoffs else "auto",
+                aspect="equal" if use_square_cells else "auto",
             )
 
             if y_model == 0:
-                axis.set_title(item_title(item))
+                axis.set_title(item_title(item, hide_max_diameter))
             if x_item == 0:
                 axis.set_ylabel(model_label if average_cutoffs else f"{model_label}\ncutoff")
             else:
@@ -399,7 +442,8 @@ def plot_combined_results(
                         fontweight="bold",
                     )
 
-    fig.suptitle(f"Model comparison: {metric.replace('_', ' ')}")
+    if not no_title:
+        fig.suptitle(f"Model comparison: {metric.replace('_', ' ')}")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=180)
@@ -414,8 +458,19 @@ def main() -> None:
         combined_output = args.combined_output
         if combined_output is None:
             combined_output = args.input_path / f"combined_{output_metric_name(args.metric, args.average_cutoffs)}_grid.png"
-        rows_by_model = [(parse_model_label(log_file), parse_results(log_file)) for log_file in log_files]
-        plot_combined_results(rows_by_model, args.metric, combined_output, args.min_layers, args.average_cutoffs)
+        rows_by_model = [
+            (parse_model_label(log_file), filter_cutoffs(parse_results(log_file), args.cutoffs))
+            for log_file in log_files
+        ]
+        plot_combined_results(
+            rows_by_model,
+            args.metric,
+            combined_output,
+            args.min_layers,
+            args.average_cutoffs,
+            args.hide_max_diameter,
+            args.no_title,
+        )
         print(f"Saved combined plot: {combined_output}")
         return
 
@@ -425,9 +480,18 @@ def main() -> None:
             f"{args.input_path.stem}_{output_metric_name(args.metric, args.average_cutoffs)}_grid.png"
         )
 
-    rows = parse_results(args.input_path)
+    rows = filter_cutoffs(parse_results(args.input_path), args.cutoffs)
     model_label = parse_model_label(args.input_path)
-    plot_results(rows, args.metric, output_file, args.min_layers, model_label, args.average_cutoffs)
+    plot_results(
+        rows,
+        args.metric,
+        output_file,
+        args.min_layers,
+        model_label,
+        args.average_cutoffs,
+        args.hide_max_diameter,
+        args.no_title,
+    )
     print(f"Saved plot: {output_file}")
 
     sibling_logs = result_log_files(args.input_path.parent)
@@ -437,8 +501,19 @@ def main() -> None:
             combined_output = args.input_path.parent / (
                 f"combined_{output_metric_name(args.metric, args.average_cutoffs)}_grid.png"
             )
-        rows_by_model = [(parse_model_label(log_file), parse_results(log_file)) for log_file in sibling_logs]
-        plot_combined_results(rows_by_model, args.metric, combined_output, args.min_layers, args.average_cutoffs)
+        rows_by_model = [
+            (parse_model_label(log_file), filter_cutoffs(parse_results(log_file), args.cutoffs))
+            for log_file in sibling_logs
+        ]
+        plot_combined_results(
+            rows_by_model,
+            args.metric,
+            combined_output,
+            args.min_layers,
+            args.average_cutoffs,
+            args.hide_max_diameter,
+            args.no_title,
+        )
         print(f"Saved combined plot: {combined_output}")
 
 
