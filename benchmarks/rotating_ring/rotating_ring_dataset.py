@@ -37,8 +37,8 @@ import torch
 
 
 RING_GRAPH_CLASS_NAMES = ("aligned", "interleaved")
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-v3"
-VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-v3"
+VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-v4"
+VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-v4"
 
 # Node-role values used only for bookkeeping/viewing. Z is left as all ones by
 # default so that atom/species type does not leak the class label.
@@ -805,6 +805,10 @@ def _validate_generated_viewer_html(html: str) -> None:
         'setActiveClass',
         'The slider is ordered by the smooth variation coordinate inside the selected class',
         'outer3DRotationDeg',
+        'getCurrentCamera',
+        'rememberCurrentCamera',
+        'scene.camera',
+        'uirevision',
     ]
     missing = [marker for marker in required_markers if marker not in html]
     if missing:
@@ -1092,7 +1096,7 @@ def write_ring_graph_viewer(
       <span id="status"></span>
     </div>
     <div id="details"></div>
-    <div class="hint">The slider is ordered by the smooth variation coordinate inside the selected class, so adjacent positions should show small geometry changes. Set outer 3D rotation to 0 for the original planar dataset, or a positive value to tilt only the outer ring. Viewer template: {VIEWER_VERSION}.</div>
+    <div class="hint">The slider is ordered by the smooth variation coordinate inside the selected class, so adjacent positions should show small geometry changes. Rotating or zooming the 3D view is preserved while the slider/class changes. Set outer 3D rotation to 0 for the original planar dataset, or a positive value to tilt only the outer ring. Viewer template: {VIEWER_VERSION}.</div>
   </div>
   <div id="plot"></div>
 
@@ -1112,6 +1116,7 @@ def write_ring_graph_viewer(
     const classLabels = Object.keys(graphsByClass).sort((a, b) => Number(a) - Number(b));
     let activeClass = classLabels[0];
     let playTimer = null;
+    let storedCamera = null;
 
     const plotDiv = document.getElementById("plot");
     const slider = document.getElementById("graph-slider");
@@ -1121,6 +1126,28 @@ def write_ring_graph_viewer(
     const playButton = document.getElementById("play-button");
 
     const config = {{responsive: true, displaylogo: false}};
+
+    function cloneObject(value) {{
+      if (value === null || value === undefined) return null;
+      return JSON.parse(JSON.stringify(value));
+    }}
+
+    function getCurrentCamera() {{
+      try {{
+        if (plotDiv && plotDiv._fullLayout && plotDiv._fullLayout.scene && plotDiv._fullLayout.scene.camera) {{
+          return cloneObject(plotDiv._fullLayout.scene.camera);
+        }}
+      }} catch (error) {{
+        // Ignore camera reads before Plotly has finished initializing.
+      }}
+      return storedCamera ? cloneObject(storedCamera) : null;
+    }}
+
+    function rememberCurrentCamera() {{
+      const camera = getCurrentCamera();
+      if (camera) storedCamera = camera;
+      return storedCamera ? cloneObject(storedCamera) : null;
+    }}
 
     function currentClassGraphs() {{
       return graphsByClass[activeClass] || [];
@@ -1164,18 +1191,25 @@ def write_ring_graph_viewer(
       ];
     }}
 
-    function makeLayout(graph) {{
-      return {{
+    function makeLayout(graph, camera) {{
+      const layout = {{
         title: {{text: graph.title, x: 0.02, xanchor: "left"}},
         scene: {{
           xaxis: {{title: "x", range: payload.axisRange}},
           yaxis: {{title: "y", range: payload.axisRange}},
           zaxis: {{title: "z", range: payload.zRange}},
-          aspectmode: "cube"
+          aspectmode: "cube",
+          uirevision: "keep-camera"
         }},
+        // Keep user-driven scene state, especially the 3D camera, across Plotly.react calls.
+        uirevision: "keep-camera",
         margin: {{l: 0, r: 0, t: 78, b: 0}},
         showlegend: false
       }};
+      if (camera) {{
+        layout.scene.camera = cloneObject(camera);
+      }}
+      return layout;
     }}
 
     function refreshClassButtons() {{
@@ -1214,7 +1248,12 @@ def write_ring_graph_viewer(
       slider.value = String(index);
 
       const graph = graphs[index];
-      Plotly.react(plotDiv, makeTraces(graph), makeLayout(graph), config);
+      const camera = rememberCurrentCamera();
+      Plotly.react(plotDiv, makeTraces(graph), makeLayout(graph, camera), config).then(() => {{
+        if (storedCamera) {{
+          Plotly.relayout(plotDiv, {{"scene.camera": cloneObject(storedCamera)}});
+        }}
+      }});
       status.textContent = `${{graph.classDisplay}} graph ${{index + 1}}/${{graphs.length}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
       details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg`;
       refreshClassButtons();
