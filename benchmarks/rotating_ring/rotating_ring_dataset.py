@@ -2,7 +2,8 @@
 
 This file creates a two-class synthetic graph dataset similar to the sketch in the
 prompt: one central node, one inner ring, and one outer ring in 3D coordinates.
-The rings are currently planar (z=0), but the tensor shape is always [n_nodes, 3].
+By default both rings are planar (z=0), but the outer ring can optionally be
+tilted out of the xy plane while the inner ring remains planar.
 
 Default class definitions
 -------------------------
@@ -14,8 +15,9 @@ label 1, "interleaved":
     offset. The outer nodes sit between the inner spokes.
 
 Both classes sample from the same radius ranges, the same global rotation range,
-and the same outer-ring rotation range. The class label is therefore encoded in
-relative ring geometry, not absolute orientation or node count.
+the same outer-ring rotation range, and the same optional 3D outer-ring tilt
+range. The class label is therefore encoded in relative ring geometry, not
+absolute orientation, 3D tilt, or node count.
 
 The topology is undirected and, by default, contains center-to-inner edges and
 inner-to-outer spoke edges. Ring-cycle edges can be enabled with flags if desired.
@@ -35,8 +37,8 @@ import torch
 
 
 RING_GRAPH_CLASS_NAMES = ("aligned", "interleaved")
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-v2"
-VIEWER_VERSION = "class-filtered-smooth-slider-v2"
+VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-v3"
+VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-v3"
 
 # Node-role values used only for bookkeeping/viewing. Z is left as all ones by
 # default so that atom/species type does not leak the class label.
@@ -60,7 +62,8 @@ class RingGraphEnvironment:
         Node species/types with shape [n_nodes]. Defaults to all ones.
     R:
         3D node positions with shape [n_nodes, 3]. The default generator places
-        all nodes in the xy plane, so z = 0.
+        all nodes in the xy plane, so z = 0. When outer 3D tilt is enabled,
+        only the outer-ring nodes move out of the xy plane.
     edge_index:
         Directed edge list with shape [2, n_directed_edges]. Edges are stored in
         both directions for an undirected graph.
@@ -133,6 +136,69 @@ def ring_positions(
     y = radius * torch.sin(angles)
     z_values = torch.full_like(x, float(z))
     return torch.stack([x, y, z_values], dim=1)
+
+
+
+
+def rotate_points_about_xy_axis(
+    points: torch.Tensor,
+    *,
+    angle: float,
+    axis_angle: float = 0.0,
+) -> torch.Tensor:
+    """Rotate points around an axis that lies in the xy plane.
+
+    Parameters
+    ----------
+    points:
+        Tensor with shape [n_points, 3]. Each row is rotated around the axis
+        passing through the origin.
+    angle:
+        Right-hand-rule rotation angle in radians. A value of 0 keeps the ring
+        planar, which is the default 2D behavior.
+    axis_angle:
+        Direction of the rotation axis inside the xy plane, in radians. The
+        default 0 rotates around the positive x-axis. Values are measured
+        counter-clockwise from +x toward +y.
+
+    Rotating a planar outer ring this way keeps every outer node at the same
+    distance from the center, so the nodes move on the surface of a sphere with
+    radius equal to the outer-ring radius.
+    """
+
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"Expected points with shape [n_points, 3], got {tuple(points.shape)}.")
+
+    angle_value = float(angle)
+    if abs(angle_value) < 1.0e-12:
+        return points.clone()
+
+    dtype = points.dtype
+    device = points.device
+    angle_tensor = torch.as_tensor(angle_value, dtype=dtype, device=device)
+    axis_angle_tensor = torch.as_tensor(float(axis_angle), dtype=dtype, device=device)
+    k = torch.stack(
+        [
+            torch.cos(axis_angle_tensor),
+            torch.sin(axis_angle_tensor),
+            torch.zeros((), dtype=dtype, device=device),
+        ]
+    )
+
+    cos_angle = torch.cos(angle_tensor)
+    sin_angle = torch.sin(angle_tensor)
+
+    # Rodrigues rotation formula: v_rot = v cos(a) + (k x v) sin(a) + k(k dot v)(1 - cos(a)).
+    k_cross_v = torch.stack(
+        [
+            k[1] * points[:, 2] - k[2] * points[:, 1],
+            k[2] * points[:, 0] - k[0] * points[:, 2],
+            k[0] * points[:, 1] - k[1] * points[:, 0],
+        ],
+        dim=1,
+    )
+    k_dot_v = (points * k.view(1, 3)).sum(dim=1, keepdim=True)
+    return points * cos_angle + k_cross_v * sin_angle + k.view(1, 3) * k_dot_v * (1.0 - cos_angle)
 
 
 def bidirectional_edge_index(edges: Iterable[tuple[int, int]]) -> torch.Tensor:
@@ -225,6 +291,8 @@ def create_ring_graph_environment(
     inner_radius: float,
     outer_radius: float,
     outer_rotation_clockwise: float,
+    outer_3d_rotation: float = 0.0,
+    outer_3d_axis_angle: float = 0.0,
     global_rotation: float = 0.0,
     n_inner: int = 8,
     n_outer: int = 8,
@@ -247,9 +315,18 @@ def create_ring_graph_environment(
     outer_rotation_clockwise:
         Per-sample clockwise phase of the outer ring, in radians. This changes
         continuously across generated samples.
+    outer_3d_rotation:
+        Out-of-plane tilt angle for the outer ring, in radians. The default 0
+        keeps the current 2D behavior. A nonzero value rotates only the outer
+        ring around an axis in the xy plane, so outer nodes move up and down on
+        a sphere while the inner ring stays planar.
+    outer_3d_axis_angle:
+        Direction of the tilt axis in the xy plane, in radians. It is interpreted
+        relative to the graph/global rotation, so the tilt direction moves with
+        the graph if `global_rotation` is used.
     global_rotation:
-        A rotation applied to the entire graph, in radians. This prevents models
-        from relying on absolute orientation.
+        A rotation applied to the graph in the xy plane, in radians. This prevents
+        models from relying on absolute in-plane orientation.
     class_phase_offset_fraction:
         Additional phase for label 1 as a fraction of one inner-ring sector.
         The default 0.5 places outer nodes halfway between inner spokes.
@@ -282,6 +359,11 @@ def create_ring_graph_environment(
         global_rotation=global_rotation,
         dtype=dtype,
     )
+    outer = rotate_points_about_xy_axis(
+        outer,
+        angle=outer_3d_rotation,
+        axis_angle=global_rotation + outer_3d_axis_angle,
+    )
     positions = torch.cat([center, inner, outer], dim=0)
     n_nodes = int(positions.shape[0])
 
@@ -305,6 +387,10 @@ def create_ring_graph_environment(
         "inner_radius": float(inner_radius),
         "outer_radius": float(outer_radius),
         "outer_rotation_clockwise": float(outer_rotation_clockwise),
+        "outer_3d_rotation": float(outer_3d_rotation),
+        "outer_3d_axis_angle": float(outer_3d_axis_angle),
+        "outer_3d_rotation_deg": float(outer_3d_rotation * 180.0 / pi),
+        "outer_3d_axis_deg": float(outer_3d_axis_angle * 180.0 / pi),
         "global_rotation": float(global_rotation),
         "class_phase_offset_clockwise": float(class_phase_offset),
         "outer_phase_clockwise": float(outer_phase),
@@ -337,6 +423,8 @@ def create_rotating_ring_dataset(
     inner_radius_range: tuple[float, float] = (1.0, 1.8),
     outer_gap_range: tuple[float, float] = (0.8, 1.6),
     outer_rotation_fraction_range: tuple[float, float] = (0.0, 0.45),
+    outer_3d_rotation_range: tuple[float, float] = (0.0, 0.0),
+    outer_3d_axis_angle: float = 0.0,
     global_rotation_fraction_range: tuple[float, float] = (0.0, 0.0),
     class_phase_offset_fraction: float = 0.5,
     smooth_order: bool = True,
@@ -362,6 +450,14 @@ def create_rotating_ring_dataset(
     sector. With the default n_inner=8, one sector is 45 degrees, so the outer
     ring rotates from 0 to 20.25 degrees for label 0 and from 22.5 to 42.75
     degrees for label 1 after the class offset is added.
+
+    `outer_3d_rotation_range` is in radians. Its default is (0, 0), so the
+    dataset is 2D exactly like the earlier version. Setting it to, for example,
+    (0, pi / 3) makes the outer ring smoothly tilt from planar to 60 degrees
+    while the inner ring remains in the xy plane.
+
+    `outer_3d_axis_angle` is the in-plane direction of the tilt axis in radians.
+    Its default is 0, which tilts around the +x axis.
 
     `global_rotation_fraction_range` is also expressed as a fraction of one
     inner-ring sector. Its default is (0, 0), so only the outer ring rotates
@@ -398,11 +494,13 @@ def create_rotating_ring_dataset(
                 inner_radius = lerp(inner_radius_range, variation_t)
                 outer_gap = lerp(outer_gap_range, variation_t)
                 outer_rotation_fraction = lerp(outer_rotation_fraction_range, variation_t)
+                outer_3d_rotation = lerp(outer_3d_rotation_range, variation_t)
                 global_rotation_fraction = lerp(global_rotation_fraction_range, variation_t)
             else:
                 inner_radius = _uniform(generator, *inner_radius_range)
                 outer_gap = _uniform(generator, *outer_gap_range)
                 outer_rotation_fraction = _uniform(generator, *outer_rotation_fraction_range)
+                outer_3d_rotation = _uniform(generator, *outer_3d_rotation_range)
                 global_rotation_fraction = _uniform(generator, *global_rotation_fraction_range)
 
             outer_radius = inner_radius + outer_gap
@@ -414,6 +512,8 @@ def create_rotating_ring_dataset(
                 inner_radius=inner_radius,
                 outer_radius=outer_radius,
                 outer_rotation_clockwise=outer_rotation_clockwise,
+                outer_3d_rotation=outer_3d_rotation,
+                outer_3d_axis_angle=outer_3d_axis_angle,
                 global_rotation=global_rotation,
                 n_inner=n_inner,
                 n_outer=n_outer,
@@ -430,6 +530,10 @@ def create_rotating_ring_dataset(
                     "variation_t": float(variation_t),
                     "smooth_order": bool(smooth_order),
                     "outer_rotation_fraction": float(outer_rotation_fraction),
+                    "outer_3d_rotation_range": tuple(float(x) for x in outer_3d_rotation_range),
+                    "outer_3d_rotation_deg_range": tuple(float(x) * 180.0 / pi for x in outer_3d_rotation_range),
+                    "outer_3d_axis_angle": float(outer_3d_axis_angle),
+                    "outer_3d_axis_deg": float(outer_3d_axis_angle * 180.0 / pi),
                     "global_rotation_fraction": float(global_rotation_fraction),
                     "inner_radius_range": tuple(float(x) for x in inner_radius_range),
                     "outer_gap_range": tuple(float(x) for x in outer_gap_range),
@@ -592,7 +696,7 @@ def save_ring_dataset(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "format": "rotating_ring_graph_dataset_v1",
+        "format": "rotating_ring_graph_dataset_v3_outer_3d",
         "class_names": RING_GRAPH_CLASS_NAMES,
         "arrays": as_padded_ring_arrays(environments, center_on_central_node=center_on_central_node),
         "metadata": [
@@ -686,7 +790,8 @@ def _viewer_title(env: RingGraphEnvironment, index: int, total: int) -> str:
         f"label={env.label} ({meta.get('class_name', 'unknown')}) | "
         f"r_inner={meta.get('inner_radius', float('nan')):.3f}, "
         f"r_outer={meta.get('outer_radius', float('nan')):.3f}, "
-        f"outer phase={meta.get('outer_phase_clockwise', float('nan')) * deg:.1f} deg"
+        f"outer phase={meta.get('outer_phase_clockwise', float('nan')) * deg:.1f} deg, "
+        f"outer 3D tilt={meta.get('outer_3d_rotation', 0.0) * deg:.1f} deg"
     )
 
 
@@ -699,6 +804,7 @@ def _validate_generated_viewer_html(html: str) -> None:
         'graphsByClass',
         'setActiveClass',
         'The slider is ordered by the smooth variation coordinate inside the selected class',
+        'outer3DRotationDeg',
     ]
     missing = [marker for marker in required_markers if marker not in html]
     if missing:
@@ -771,7 +877,9 @@ def write_ring_graph_viewer(
         for _, env in selected_items
     )
     axis_range = [-1.15 * max_radius, 1.15 * max_radius]
-    z_range = [-0.5 * max_radius, 0.5 * max_radius]
+    # Use the same range for z so tilted outer-ring nodes are always visible
+    # and the sphere interpretation is not visually compressed.
+    z_range = list(axis_range)
 
     role_to_color = {
         CENTER_ROLE: "#f47c20",
@@ -837,6 +945,8 @@ def write_ring_graph_viewer(
             outer_radius = float(meta.get("outer_radius", float("nan")))
             outer_phase = float(meta.get("outer_phase_clockwise", float("nan")))
             outer_rotation = float(meta.get("outer_rotation_clockwise", float("nan")))
+            outer_3d_rotation = float(meta.get("outer_3d_rotation", 0.0))
+            outer_3d_axis_angle = float(meta.get("outer_3d_axis_angle", 0.0))
             global_rotation = float(meta.get("global_rotation", float("nan")))
             title = (
                 f"{class_display} ({class_name}) | variation {100.0 * variation_t:.1f}% | "
@@ -844,6 +954,7 @@ def write_ring_graph_viewer(
                 f"r_inner={inner_radius:.3f}, r_outer={outer_radius:.3f}, "
                 f"outer rotation={outer_rotation * deg:.1f} deg, "
                 f"outer phase={outer_phase * deg:.1f} deg, "
+                f"outer 3D tilt={outer_3d_rotation * deg:.1f} deg, "
                 f"global rotation={global_rotation * deg:.1f} deg"
             )
 
@@ -862,6 +973,8 @@ def write_ring_graph_viewer(
                     "outerRadius": outer_radius,
                     "outerRotationDeg": outer_rotation * deg,
                     "outerPhaseDeg": outer_phase * deg,
+                    "outer3DRotationDeg": outer_3d_rotation * deg,
+                    "outer3DAxisDeg": outer_3d_axis_angle * deg,
                     "globalRotationDeg": global_rotation * deg,
                     "nodeX": node_x,
                     "nodeY": node_y,
@@ -979,7 +1092,7 @@ def write_ring_graph_viewer(
       <span id="status"></span>
     </div>
     <div id="details"></div>
-    <div class="hint">The slider is ordered by the smooth variation coordinate inside the selected class, so adjacent positions should show small geometry changes. Viewer template: {VIEWER_VERSION}.</div>
+    <div class="hint">The slider is ordered by the smooth variation coordinate inside the selected class, so adjacent positions should show small geometry changes. Set outer 3D rotation to 0 for the original planar dataset, or a positive value to tilt only the outer ring. Viewer template: {VIEWER_VERSION}.</div>
   </div>
   <div id="plot"></div>
 
@@ -1103,7 +1216,7 @@ def write_ring_graph_viewer(
       const graph = graphs[index];
       Plotly.react(plotDiv, makeTraces(graph), makeLayout(graph), config);
       status.textContent = `${{graph.classDisplay}} graph ${{index + 1}}/${{graphs.length}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
-      details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg`;
+      details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg`;
       refreshClassButtons();
     }}
 
@@ -1193,6 +1306,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--outer-gap-max", type=float, default=1.6)
     parser.add_argument("--outer-rotation-frac-min", type=float, default=0.0)
     parser.add_argument("--outer-rotation-frac-max", type=float, default=0.45)
+    parser.add_argument(
+        "--outer-3d-rotation-deg",
+        type=float,
+        default=None,
+        help=(
+            "Convenience value for the maximum out-of-plane outer-ring tilt in degrees. "
+            "With the default smooth ordering, samples sweep from --outer-3d-rotation-deg-min "
+            "to this value. Use 0 to keep the dataset 2D."
+        ),
+    )
+    parser.add_argument("--outer-3d-rotation-deg-min", type=float, default=0.0)
+    parser.add_argument("--outer-3d-rotation-deg-max", type=float, default=0.0)
+    parser.add_argument(
+        "--outer-3d-axis-deg",
+        type=float,
+        default=0.0,
+        help="In-plane direction of the outer-ring tilt axis in degrees. 0 means the +x axis.",
+    )
     parser.add_argument("--global-rotation-frac-min", type=float, default=0.0)
     parser.add_argument("--global-rotation-frac-max", type=float, default=0.0)
     parser.add_argument("--class-phase-offset-frac", type=float, default=0.5)
@@ -1210,6 +1341,11 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    outer_3d_rotation_deg_max = (
+        args.outer_3d_rotation_deg
+        if args.outer_3d_rotation_deg is not None
+        else args.outer_3d_rotation_deg_max
+    )
     envs = create_rotating_ring_dataset(
         n_graphs=args.n_graphs,
         seed=args.seed,
@@ -1218,6 +1354,11 @@ def main() -> None:
         inner_radius_range=(args.inner_radius_min, args.inner_radius_max),
         outer_gap_range=(args.outer_gap_min, args.outer_gap_max),
         outer_rotation_fraction_range=(args.outer_rotation_frac_min, args.outer_rotation_frac_max),
+        outer_3d_rotation_range=(
+            args.outer_3d_rotation_deg_min * pi / 180.0,
+            outer_3d_rotation_deg_max * pi / 180.0,
+        ),
+        outer_3d_axis_angle=args.outer_3d_axis_deg * pi / 180.0,
         global_rotation_fraction_range=(args.global_rotation_frac_min, args.global_rotation_frac_max),
         class_phase_offset_fraction=args.class_phase_offset_frac,
         smooth_order=not args.random_parameters,
