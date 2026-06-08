@@ -20,6 +20,7 @@ def verify_k_chain(k: int, dist_hard_max: float) -> tuple[dict[str, torch.Tensor
     assert arrays["Z"].shape == (2, k + 2)
     assert arrays["R"].shape == (2, k + 2, 3)
     assert arrays["T"].shape == (2, 1)
+    assert arrays["edge_indices"].shape == (2, 2, 2 * (k + 1))
     assert torch.equal(arrays["Z"], torch.ones_like(arrays["Z"]))
     assert torch.equal(arrays["T"].squeeze(-1).long(), torch.tensor([0, 1]))
     assert torch.allclose(arrays["R"].mean(dim=1), torch.zeros(2, 3), atol=1e-6)

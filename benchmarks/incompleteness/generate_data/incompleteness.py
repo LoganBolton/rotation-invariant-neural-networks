@@ -202,7 +202,7 @@ def center_leaf_edge_tensors(
     environments: list[IncompletenessEnvironment],
     species: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    """Build compressed atom-indexed center-leaf edges for each environment."""
+    """Build center-leaf edge tensors for hippynn and diagnostic checks."""
 
     if species.ndim != 2:
         raise ValueError(f"Expected species to have shape [n_systems, n_atoms_max], got {tuple(species.shape)}.")
@@ -210,6 +210,13 @@ def center_leaf_edge_tensors(
         raise ValueError(f"Expected {len(environments)} species batches, got {species.shape[0]}.")
 
     edge_index_by_env = []
+    max_edges = max(2 * (environment.Z.shape[0] - 1) for environment in environments)
+    edge_indices = torch.full(
+        (len(environments), 2, max_edges),
+        -1,
+        dtype=torch.long,
+        device=species.device,
+    )
     atom_offset = 0
 
     for sample_index, environment in enumerate(environments):
@@ -230,6 +237,7 @@ def center_leaf_edge_tensors(
             ],
             dim=1,
         )
+        edge_indices[sample_index, :, : local_edges.shape[1]] = local_edges
         edge_index_by_env.append(local_edges + atom_offset)
         atom_offset += n_nodes
 
@@ -238,7 +246,7 @@ def center_leaf_edge_tensors(
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long, device=species.device)
 
-    return {"edge_index": edge_index}
+    return {"edge_index": edge_index, "edge_indices": edge_indices}
 
 
 def as_hippynn_arrays(

@@ -13,16 +13,19 @@ from benchmarks.incompleteness.generate_data.incompleteness import (
     pair_distance_matrix,
     star_edge_index,
 )
-from benchmarks.run_models.train import edge_pair_tensors
 
 
 def assert_center_leaf_edges(arrays: dict[str, torch.Tensor]) -> None:
     species = arrays["Z"]
     edge_index = arrays["edge_index"]
+    edge_indices = arrays["edge_indices"]
 
     assert edge_index.dtype == torch.long
     assert edge_index.ndim == 2
     assert edge_index.shape[0] == 2
+    assert edge_indices.dtype == torch.long
+    assert edge_indices.ndim == 3
+    assert edge_indices.shape[:2] == (species.shape[0], 2)
 
     real_atoms = species != 0
     atom_system_indices, atom_local_indices = torch.nonzero(real_atoms, as_tuple=True)
@@ -50,16 +53,18 @@ def assert_center_leaf_edges(arrays: dict[str, torch.Tensor]) -> None:
     actual_counts = torch.bincount(first_system, minlength=species.shape[0])
     assert torch.equal(actual_counts, expected_counts)
 
-    pairs = edge_pair_tensors(arrays)
-    assert torch.equal(pairs["pair_first"], edge_first)
-    assert torch.equal(pairs["pair_second"], edge_second)
+    rebuilt_edges = []
+    atom_offset = 0
+    for sample_index, n_real in enumerate(real_atoms.sum(dim=1).tolist()):
+        sample_edges = edge_indices[sample_index]
+        present = (sample_edges[0] >= 0) & (sample_edges[1] >= 0)
+        assert torch.all(sample_edges[:, ~present] == -1)
+        assert present.sum() == expected_counts[sample_index]
+        assert sample_edges[:, present].max() < n_real
+        rebuilt_edges.append(sample_edges[:, present] + atom_offset)
+        atom_offset += n_real
 
-    real_flat_indices = torch.nonzero(real_atoms.reshape(-1), as_tuple=False).squeeze(1)
-    positions = arrays["R"]
-    atom_positions = positions.reshape(-1, 3)[real_flat_indices]
-    expected_coord = atom_positions[edge_first] - atom_positions[edge_second]
-    assert torch.allclose(pairs["pair_coord"], expected_coord)
-    assert torch.allclose(pairs["pair_dist"], torch.linalg.vector_norm(expected_coord, dim=1))
+    assert torch.equal(torch.cat(rebuilt_edges, dim=1), edge_index)
 
 
 def verify_pair(name: str, dist_hard_max: float) -> dict[str, object]:

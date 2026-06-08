@@ -79,6 +79,7 @@ def as_hippynn_arrays(graphs: list[KChainGraph]) -> dict[str, torch.Tensor]:
         "Z": species,
         "R": torch.stack([g.R for g in graphs]),
         "T": torch.tensor([[g.label] for g in graphs], dtype=torch.get_default_dtype()),
+        "edge_indices": torch.stack([g.edge_index for g in graphs]),
     }
 
 
