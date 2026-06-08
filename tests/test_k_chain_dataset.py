@@ -20,14 +20,6 @@ def verify_k_chain(k: int, dist_hard_max: float) -> tuple[dict[str, torch.Tensor
     assert arrays["Z"].shape == (2, k + 2)
     assert arrays["R"].shape == (2, k + 2, 3)
     assert arrays["T"].shape == (2, 1)
-    assert arrays["central_atom_mask"].shape == (2, k + 2)
-
-    expected_central_mask = torch.nn.functional.one_hot(
-        torch.zeros(2, dtype=torch.long),
-        k + 2,
-    ).to(arrays["central_atom_mask"].dtype)
-
-    assert torch.equal(arrays["central_atom_mask"], expected_central_mask)
     assert torch.equal(arrays["Z"], torch.ones_like(arrays["Z"]))
     assert torch.equal(arrays["T"].squeeze(-1).long(), torch.tensor([0, 1]))
     assert torch.allclose(arrays["R"].mean(dim=1), torch.zeros(2, 3), atol=1e-6)

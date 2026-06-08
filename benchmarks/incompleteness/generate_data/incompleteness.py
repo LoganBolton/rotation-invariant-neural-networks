@@ -311,36 +311,6 @@ def create_all_incompleteness_pairs(
     return {name: create_incompleteness_pair(name, coordinate_set=coordinate_set) for name in COUNTEREXAMPLE_NAMES}
 
 
-def atom_mask_from_local(species: torch.Tensor, local_indices: torch.Tensor | int) -> torch.Tensor:
-    """Build a padded atom mask with one selected local atom per system."""
-
-    if species.ndim != 2:
-        raise ValueError(f"Expected species to have shape [n_systems, n_atoms_max], got {tuple(species.shape)}.")
-
-    n_systems, n_atoms_max = species.shape
-    local_indices = torch.as_tensor(local_indices, dtype=torch.long, device=species.device)
-    if local_indices.ndim == 0:
-        local_indices = local_indices.expand(n_systems)
-    if local_indices.shape[0] != n_systems:
-        raise ValueError(
-            f"Expected central atom local indices for {n_systems} systems, got shape {tuple(local_indices.shape)}."
-        )
-    if (local_indices < 0).any() or (local_indices >= n_atoms_max).any():
-        raise ValueError("Central atom local indices are out of bounds for the padded atom dimension.")
-
-    system_indices = torch.arange(n_systems, dtype=torch.long, device=species.device)
-    for _ in range(local_indices.ndim - 1):
-        system_indices = system_indices.unsqueeze(-1)
-    system_indices = system_indices.expand_as(local_indices)
-
-    if (species[system_indices, local_indices] == 0).any():
-        raise ValueError("Central atom local indices must point to real, non-padding atoms.")
-
-    atom_mask = torch.zeros_like(species, dtype=torch.get_default_dtype())
-    atom_mask[system_indices, local_indices] = 1
-    return atom_mask
-
-
 def center_leaf_edge_tensors(
     environments: list[IncompletenessEnvironment],
     species: torch.Tensor,
@@ -403,13 +373,11 @@ def as_hippynn_arrays(
         positions = positions - positions.mean(dim=1, keepdim=True)
 
     species = torch.stack([env.Z for env in environments])
-    central_local_indices = torch.tensor([env.central_atom_local_index for env in environments], dtype=torch.long)
 
     return {
         "Z": species,
         "R": positions,
         "T": torch.tensor([[env.label] for env in environments], dtype=torch.get_default_dtype()),
-        "central_atom_mask": atom_mask_from_local(species, central_local_indices),
         **center_leaf_edge_tensors(environments, species),
     }
 
@@ -440,10 +408,6 @@ def as_padded_hippynn_arrays(
         "Z": species,
         "R": positions,
         "T": torch.tensor([[env.label] for env in environments], dtype=torch.get_default_dtype()),
-        "central_atom_mask": atom_mask_from_local(
-            species,
-            torch.tensor([env.central_atom_local_index for env in environments], dtype=torch.long),
-        ),
         **center_leaf_edge_tensors(environments, species),
     }
 

@@ -1,8 +1,8 @@
 """Sweep small HIP-NN configs on two-sample geometric benchmark tasks.
 
-Example run: 
-`uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/central_node`
-uv run python benchmarks/run_models/sweep.py --dataset k_chain --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/k_chain/results/central_node
+Example run:
+`uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/system_node`
+uv run python benchmarks/run_models/sweep.py --dataset k_chain --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/k_chain/results/system_node
 """
 
 
@@ -46,7 +46,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coordinate-set", choices=("v2", "original"), default="original")
     parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
-    parser.add_argument("--readout", choices=["system", "central"], default="central")
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
     parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 2, 3, 4])
@@ -146,7 +145,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
 
     if args.dataset == "k_chain":
         print(
-            f"Sweeping {args.model} with {args.readout} readout and {args.neighborhood_cutoff} neighborhood "
+            f"Sweeping {args.model} with {args.neighborhood_cutoff} neighborhood "
             f"on k-chain k={args.k} with seeds={args.seeds}",
             flush=True,
             file=output,
@@ -154,7 +153,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
         item_header = "k"
     else:
         print(
-            f"Sweeping {args.model} with {args.readout} readout and {args.neighborhood_cutoff} neighborhood "
+            f"Sweeping {args.model} with {args.neighborhood_cutoff} neighborhood "
             f"on {args.coordinate_set} incompleteness {args.counterexamples} with seeds={args.seeds}",
             flush=True,
             file=output,
@@ -184,7 +183,6 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         epochs=args.epochs,
                         seed=seed,
                         model=args.model,
-                        readout=args.readout,
                         neighborhood_cutoff=args.neighborhood_cutoff,
                         learning_rate=args.learning_rate,
                         n_interaction_layers=n_layers,

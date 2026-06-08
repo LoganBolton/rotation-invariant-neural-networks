@@ -52,12 +52,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn", help="Network architecture to train.")
     parser.add_argument(
-        "--readout",
-        choices=["system", "central"],
-        default="system",
-        help="Use the normal system-summed readout or a central-atom-only readout.",
-    )
-    parser.add_argument(
         "--neighborhood-cutoff",
         choices=["cutoff", "edges"],
         default="cutoff",
@@ -97,8 +91,8 @@ def edge_pair_tensors(arrays: dict[str, torch.Tensor]) -> dict[str, torch.Tensor
     if edge_index.ndim != 2 or edge_index.shape[0] != 2:
         raise ValueError(f"Expected edge_index shape [2, n_edges], got {tuple(edge_index.shape)}.")
 
-    real_atom_mask = species != 0
-    real_flat_indices = torch.nonzero(real_atom_mask.reshape(-1), as_tuple=False).squeeze(1)
+    real_atoms = species != 0
+    real_flat_indices = torch.nonzero(real_atoms.reshape(-1), as_tuple=False).squeeze(1)
     n_real_atoms = real_flat_indices.numel()
     if edge_index.numel() > 0 and ((edge_index < 0).any() or (edge_index >= n_real_atoms).any()):
         raise ValueError("edge_index contains compressed atom indices outside the real atom range.")
@@ -134,10 +128,8 @@ def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str
 
 def make_model(args: argparse.Namespace) -> torch.nn.Module:
     from hippynn.graphs import GraphModule, IdxType, inputs, networks, targets
-    from hippynn.graphs.indextypes import index_type_coercion
     from hippynn.graphs.nodes.base import InputNode
     from hippynn.graphs.nodes.indexers import acquire_encoding_padding
-    from hippynn.graphs.nodes.tags import AtomIndexer
 
     neighborhood_cutoff = getattr(args, "neighborhood_cutoff", "cutoff")
     if neighborhood_cutoff not in {"cutoff", "edges"}:
@@ -199,19 +191,6 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
             network = network_class("geometric_model", (species, positions), module_kwargs=network_params)
             graph_inputs = [species, positions]
 
-    readout = getattr(args, "readout", "system")
-    if readout == "central":
-        central_atom_mask_input = InputNode(db_name="central_atom_mask", index_state=IdxType.SysAtom)
-        central_atom_mask = index_type_coercion(central_atom_mask_input, IdxType.Atoms, hints=(network,))
-        atom_indexer = network.find_unique_relative(AtomIndexer)
-        logit = targets.HEnergyNode(
-            "central_logit",
-            (network, atom_indexer.system_index, atom_indexer.n_systems, central_atom_mask),
-            module_kwargs={"feature_sizes": network.torch_module.feature_sizes},
-            db_name="T",
-        )
-        return GraphModule([*graph_inputs, central_atom_mask_input], [logit.system_energy])
-
     logit = targets.HEnergyNode("logit", network, db_name="T")
     return GraphModule(graph_inputs, [logit.system_energy])
 
@@ -220,7 +199,6 @@ def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]
     neighborhood_cutoff = getattr(args, "neighborhood_cutoff", "cutoff")
     if neighborhood_cutoff not in {"cutoff", "edges"}:
         raise ValueError(f"Unknown neighborhood cutoff {neighborhood_cutoff!r}. Expected 'cutoff' or 'edges'.")
-    readout = getattr(args, "readout", "system")
 
     if neighborhood_cutoff == "edges":
         pairs = edge_pair_tensors(arrays)
@@ -230,16 +208,10 @@ def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]
             pairs["pair_second"],
             pairs["pair_dist"],
         ]
-        if args.model in {"hiphop"}:
+        if args.model in {"hipnnvec", "hiphop"}:
             inputs.append(pairs["pair_coord"])
     else:
         inputs = [arrays["Z"], arrays["R"]]
-
-    if readout == "central":
-        central_atom_mask = arrays.get("central_atom_mask")
-        if central_atom_mask is None:
-            raise ValueError("Central readout requires the dataset arrays to include 'central_atom_mask'.")
-        inputs.append(central_atom_mask)
 
     return tuple(inputs)
 

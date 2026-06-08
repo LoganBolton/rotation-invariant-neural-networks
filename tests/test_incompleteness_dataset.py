@@ -24,21 +24,21 @@ def assert_center_leaf_edges(arrays: dict[str, torch.Tensor]) -> None:
     assert edge_index.ndim == 2
     assert edge_index.shape[0] == 2
 
-    real_atom_mask = species != 0
-    atom_system_indices, atom_local_indices = torch.nonzero(real_atom_mask, as_tuple=True)
+    real_atoms = species != 0
+    atom_system_indices, atom_local_indices = torch.nonzero(real_atoms, as_tuple=True)
     edge_first, edge_second = edge_index
 
     assert edge_index.shape[1] > 0
     assert edge_first.min() >= 0
     assert edge_second.min() >= 0
-    assert edge_first.max() < real_atom_mask.sum()
-    assert edge_second.max() < real_atom_mask.sum()
+    assert edge_first.max() < real_atoms.sum()
+    assert edge_second.max() < real_atoms.sum()
 
     first_system = atom_system_indices[edge_first]
     second_system = atom_system_indices[edge_second]
     first_local = atom_local_indices[edge_first]
     second_local = atom_local_indices[edge_second]
-    central_local = arrays["central_atom_mask"].argmax(dim=1)
+    central_local = torch.zeros(species.shape[0], dtype=torch.long)
 
     assert torch.equal(first_system, second_system)
     first_is_center = first_local == central_local[first_system]
@@ -46,7 +46,7 @@ def assert_center_leaf_edges(arrays: dict[str, torch.Tensor]) -> None:
     assert torch.all(first_is_center | second_is_center)
     assert not torch.any((~first_is_center) & (~second_is_center))
 
-    expected_counts = 2 * (real_atom_mask.sum(dim=1) - 1)
+    expected_counts = 2 * (real_atoms.sum(dim=1) - 1)
     actual_counts = torch.bincount(first_system, minlength=species.shape[0])
     assert torch.equal(actual_counts, expected_counts)
 
@@ -54,7 +54,7 @@ def assert_center_leaf_edges(arrays: dict[str, torch.Tensor]) -> None:
     assert torch.equal(pairs["pair_first"], edge_first)
     assert torch.equal(pairs["pair_second"], edge_second)
 
-    real_flat_indices = torch.nonzero(real_atom_mask.reshape(-1), as_tuple=False).squeeze(1)
+    real_flat_indices = torch.nonzero(real_atoms.reshape(-1), as_tuple=False).squeeze(1)
     positions = arrays["R"]
     atom_positions = positions.reshape(-1, 3)[real_flat_indices]
     expected_coord = atom_positions[edge_first] - atom_positions[edge_second]
@@ -73,15 +73,7 @@ def verify_pair(name: str, dist_hard_max: float) -> dict[str, object]:
     assert arrays["Z"].shape == (2, n_nodes)
     assert arrays["R"].shape == (2, n_nodes, 3)
     assert arrays["T"].shape == (2, 1)
-    assert arrays["central_atom_mask"].shape == (2, n_nodes)
     assert_center_leaf_edges(arrays)
-
-    expected_central_mask = torch.nn.functional.one_hot(
-        torch.zeros(2, dtype=torch.long),
-        n_nodes,
-    ).to(arrays["central_atom_mask"].dtype)
-
-    assert torch.equal(arrays["central_atom_mask"], expected_central_mask)
     assert torch.equal(arrays["Z"], torch.ones_like(arrays["Z"]))
     assert torch.equal(arrays["T"].squeeze(-1).long(), torch.tensor([0, 1]))
     assert torch.allclose(arrays["R"].mean(dim=1), torch.zeros(2, 3), atol=1e-6)

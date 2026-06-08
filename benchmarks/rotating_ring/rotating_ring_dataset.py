@@ -556,32 +556,6 @@ def create_rotating_ring_dataset(
 # -----------------------------------------------------------------------------
 
 
-def atom_mask_from_local(species: torch.Tensor, local_indices: torch.Tensor | int) -> torch.Tensor:
-    """Build a padded atom mask with one selected local atom per system."""
-
-    if species.ndim != 2:
-        raise ValueError(f"Expected species to have shape [n_systems, n_atoms_max], got {tuple(species.shape)}.")
-
-    n_systems, n_atoms_max = species.shape
-    local_indices = torch.as_tensor(local_indices, dtype=torch.long, device=species.device)
-    if local_indices.ndim == 0:
-        local_indices = local_indices.expand(n_systems)
-    if local_indices.shape[0] != n_systems:
-        raise ValueError(
-            f"Expected central atom local indices for {n_systems} systems, got shape {tuple(local_indices.shape)}."
-        )
-    if (local_indices < 0).any() or (local_indices >= n_atoms_max).any():
-        raise ValueError("Central atom local indices are out of bounds for the padded atom dimension.")
-
-    system_indices = torch.arange(n_systems, dtype=torch.long, device=species.device)
-    if (species[system_indices, local_indices] == 0).any():
-        raise ValueError("Central atom local indices must point to real, non-padding atoms.")
-
-    atom_mask = torch.zeros_like(species, dtype=torch.get_default_dtype())
-    atom_mask[system_indices, local_indices] = 1.0
-    return atom_mask
-
-
 def as_padded_ring_arrays(
     environments: list[RingGraphEnvironment],
     *,
@@ -590,7 +564,7 @@ def as_padded_ring_arrays(
     """Stack ring graph environments into padded tensors.
 
     Returns keys compatible with the style of the provided helper file:
-        Z, R, T, central_atom_mask, edge_index
+        Z, R, T, edge_index
 
     It also returns:
         node_role, node_mask, graph_index, node_counts
@@ -611,7 +585,6 @@ def as_padded_ring_arrays(
     node_role = torch.full((n_systems, max_nodes), PADDING_ROLE, dtype=torch.long)
     node_mask = torch.zeros((n_systems, max_nodes), dtype=torch.get_default_dtype())
     labels = torch.empty((n_systems, 1), dtype=torch.get_default_dtype())
-    central_indices = torch.empty((n_systems,), dtype=torch.long)
     node_counts = torch.empty((n_systems,), dtype=torch.long)
     graph_index_parts: list[torch.Tensor] = []
     edge_index_parts: list[torch.Tensor] = []
@@ -628,7 +601,6 @@ def as_padded_ring_arrays(
         node_role[sample_index, :n_nodes] = env.node_role
         node_mask[sample_index, :n_nodes] = 1.0
         labels[sample_index, 0] = float(env.label)
-        central_indices[sample_index] = int(env.central_atom_local_index)
         node_counts[sample_index] = n_nodes
 
         edge_index_parts.append(env.edge_index + atom_offset)
@@ -642,7 +614,6 @@ def as_padded_ring_arrays(
         "Z": species,
         "R": positions,
         "T": labels,
-        "central_atom_mask": atom_mask_from_local(species, central_indices),
         "edge_index": edge_index,
         "node_role": node_role,
         "node_mask": node_mask,

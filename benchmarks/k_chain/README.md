@@ -22,12 +22,6 @@ To train the scalar HIP-NN output as a binary logit:
 uv run python benchmarks/run_models/train.py --k 4 --epochs 5000
 ```
 
-To keep normal HIP-NN message passing but read out only from the designated atom:
-
-```bash
-uv run python benchmarks/run_models/train.py --k 4 --readout central --epochs 5000
-```
-
 To compare depths, cutoffs, and random seeds:
 
 ```bash

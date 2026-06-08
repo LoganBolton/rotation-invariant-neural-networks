@@ -24,6 +24,3 @@ uv sync
 # Run the test suite.
 uv run pytest
 ```
-## Todo
-
-1. The current method to make classification work with the central node readout only is to zero out the contribution of all the atoms besides the central atom. In the future, it would be nice to have a `ClassificationNode` that inputs an atom's features into an MLP to make predictions that way.

@@ -48,7 +48,6 @@ The tensors intended for HIP-NN use the usual names:
 - `Z`: integer species, with `0` reserved for padding and `1` for every real toy node.
 - `R`: Cartesian positions centered per environment when stacked for HIP-NN.
 - `T`: binary labels shaped as scalar targets.
-- `central_atom_mask`: padded atom mask selecting node `0` in each environment.
 - `edge_index`: compressed atom-indexed center-leaf edges for explicit edge
   based message passing.
 
@@ -65,12 +64,6 @@ To train on the original coordinates instead:
 
 ```bash
 uv run python benchmarks/run_models/train.py --dataset incompleteness --coordinate-set original --epochs 5000
-```
-
-To use the central-atom-only hierarchical readout:
-
-```bash
-uv run python benchmarks/run_models/train.py --dataset incompleteness --readout central --epochs 5000
 ```
 
 To restrict message passing to the stored center-leaf star graph instead of
@@ -145,7 +138,6 @@ The final arrays include:
     "Z": species,
     "R": positions,
     "T": targets,
-    "central_atom_mask": central_atom_mask,
     "edge_index": edge_index,
 }
 ```
@@ -214,7 +206,6 @@ The sweep script exposes the same flag:
 uv run python benchmarks/run_models/sweep.py \
   --dataset incompleteness \
   --coordinate-set original \
-  --readout system \
   --neighborhood-cutoff edges \
   --output-dir benchmarks/incompleteness/results/system_original_edges
 ```
@@ -241,13 +232,8 @@ but there is still no direct message:
 leaf A -> leaf B
 ```
 
-This is different from the central readout mask. The central readout mask changes
-which atom features contribute to the final output. Edge neighborhoods change
-which atoms can exchange information inside each interaction layer. These two
-features can be used independently:
-
-- `--readout central` controls the output aggregation.
-- `--neighborhood-cutoff edges` controls the message-passing graph.
+Edge neighborhoods change which atoms can exchange information inside each
+interaction layer. They do not change the final system-level readout.
 
 ### Tests
 
@@ -266,7 +252,7 @@ The tests check that:
 The most useful command for this area is:
 
 ```bash
-uv run pytest tests/test_incompleteness_dataset.py tests/test_central_readout.py
+uv run pytest tests/test_incompleteness_dataset.py tests/test_edge_neighborhood.py
 ```
 
 The shared sweep script accepts the same dataset flag:
@@ -275,11 +261,11 @@ The shared sweep script accepts the same dataset flag:
 uv run python benchmarks/run_models/sweep.py --dataset incompleteness --counterexamples two_body three_body four_body_nonchiral four_body_chiral --epochs 2000 --seeds 0 1 2 --interaction-layers 1 2 3 --hard-cutoffs 5 10 14 18
 ```
 
-To run the standard central-readout HIP-NN/HIP-HOP comparison in one command
+To run the standard HIP-NN/HIP-HOP comparison in one command
 and write one markdown log per model config:
 
 ```bash
-uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/central_node
+uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/system_node
 ```
 
 The default config bundle writes:
