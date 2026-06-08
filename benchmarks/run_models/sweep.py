@@ -43,7 +43,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain")
     parser.add_argument("--k", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--counterexamples", choices=COUNTEREXAMPLE_NAMES, nargs="+", default=list(COUNTEREXAMPLE_NAMES))
-    parser.add_argument("--coordinate-set", choices=("v2", "original"), default="original")
     parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
@@ -154,7 +153,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
     else:
         print(
             f"Sweeping {args.model} with {args.neighborhood_cutoff} neighborhood "
-            f"on {args.coordinate_set} incompleteness {args.counterexamples} with seeds={args.seeds}",
+            f"on incompleteness {args.counterexamples} with seeds={args.seeds}",
             flush=True,
             file=output,
         )
@@ -179,7 +178,6 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         dataset=args.dataset,
                         k=dataset_item if args.dataset == "k_chain" else args.k[0],
                         counterexample=dataset_item if args.dataset == "incompleteness" else args.counterexamples[0],
-                        coordinate_set=args.coordinate_set,
                         epochs=args.epochs,
                         seed=seed,
                         model=args.model,

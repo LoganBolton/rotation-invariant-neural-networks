@@ -12,10 +12,6 @@ the geometric GNN dojo
 Each pair has two star-shaped local environments centered at node `0`, with
 labels `0` and `1`.
 
-By default, the dataset uses the `v2` coordinate set, whose center-leaf distances
-are smaller than leaf-leaf distances. The original notebook-style coordinates
-remain available with `coordinate_set="original"` or `--coordinate-set original`.
-
 The first step is dataset verification:
 
 ```bash
@@ -28,20 +24,14 @@ To verify one pair:
 uv run python benchmarks/incompleteness/generate_data/verify_dataset.py --counterexample three_body
 ```
 
-To verify the original coordinates:
-
-```bash
-uv run python benchmarks/incompleteness/generate_data/verify_dataset.py --coordinate-set original
-```
-
 To also save 3D plots of the counterexample pairs:
 
 ```bash
 uv run python benchmarks/incompleteness/generate_data/verify_dataset.py --plot
 ```
 
-The default plot output for the v2 coordinates is
-`benchmarks/incompleteness/generate_data/v2_visualizations`.
+The default plot output is
+`benchmarks/incompleteness/generate_data/visualizations`.
 
 The tensors intended for HIP-NN use the usual names:
 
@@ -58,12 +48,6 @@ flag:
 
 ```bash
 uv run python benchmarks/run_models/train.py --dataset incompleteness --epochs 5000
-```
-
-To train on the original coordinates instead:
-
-```bash
-uv run python benchmarks/run_models/train.py --dataset incompleteness --coordinate-set original --epochs 5000
 ```
 
 To restrict message passing to the stored center-leaf star graph instead of
@@ -205,9 +189,8 @@ The sweep script exposes the same flag:
 ```bash
 uv run python benchmarks/run_models/sweep.py \
   --dataset incompleteness \
-  --coordinate-set original \
   --neighborhood-cutoff edges \
-  --output-dir benchmarks/incompleteness/results/system_original_edges
+  --output-dir benchmarks/incompleteness/results/system_edges
 ```
 
 When `--output-dir` is provided without `--model-configs`, the sweep runs the

@@ -42,12 +42,6 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Incompleteness counterexample to train on when --dataset incompleteness.",
     )
-    parser.add_argument(
-        "--coordinate-set",
-        choices=("v2", "original"),
-        default="v2",
-        help="Coordinate set for --dataset incompleteness.",
-    )
     parser.add_argument("--epochs", type=int, default=4000, help="Number of full-batch training epochs.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hipnn", help="Network architecture to train.")
@@ -114,14 +108,13 @@ def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str
     if args.dataset == "k_chain":
         return as_kchain_arrays(create_kchains(args.k)), f"k={args.k} k-chain pair"
     if args.dataset == "incompleteness":
-        coordinate_set = getattr(args, "coordinate_set", "v2")
         if args.counterexample == "all":
-            pairs_by_name = create_all_incompleteness_pairs(coordinate_set=coordinate_set)
+            pairs_by_name = create_all_incompleteness_pairs()
             environments = [environment for name in COUNTEREXAMPLE_NAMES for environment in pairs_by_name[name]]
-            return as_padded_incompleteness_arrays(environments), f"all {coordinate_set} incompleteness counterexamples"
+            return as_padded_incompleteness_arrays(environments), "all incompleteness counterexamples"
         return (
-            as_incompleteness_arrays(create_incompleteness_pair(args.counterexample, coordinate_set=coordinate_set)),
-            f"{args.counterexample} {coordinate_set} incompleteness pair",
+            as_incompleteness_arrays(create_incompleteness_pair(args.counterexample)),
+            f"{args.counterexample} incompleteness pair",
         )
     raise ValueError(f"Unknown dataset {args.dataset!r}.")
 

@@ -20,7 +20,6 @@ from incompleteness import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--counterexample", choices=COUNTEREXAMPLE_NAMES, default=None)
-    parser.add_argument("--coordinate-set", choices=("v2", "original"), default="v2")
     parser.add_argument(
         "--dist-hard-max",
         type=float,
@@ -32,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Plot output directory. Defaults to <coordinate-set>_visualizations next to this script.",
+        help="Plot output directory. Defaults to visualizations next to this script.",
     )
     return parser.parse_args()
 
@@ -210,17 +209,15 @@ def plot_pair(name: str, environments: list[IncompletenessEnvironment], output_f
 def main() -> None:
     args = parse_args()
     if args.counterexample is None:
-        pairs_by_name = create_all_incompleteness_pairs(coordinate_set=args.coordinate_set)
+        pairs_by_name = create_all_incompleteness_pairs()
     else:
-        pairs_by_name = {
-            args.counterexample: create_incompleteness_pair(args.counterexample, coordinate_set=args.coordinate_set)
-        }
+        pairs_by_name = {args.counterexample: create_incompleteness_pair(args.counterexample)}
 
     for name, environments in pairs_by_name.items():
         verify_pair(name, environments, dist_hard_max=args.dist_hard_max)
 
     if args.plot:
-        output_dir = args.output_dir or Path(__file__).with_name(f"{args.coordinate_set}_visualizations")
+        output_dir = args.output_dir or Path(__file__).with_name("visualizations")
         for name, environments in pairs_by_name.items():
             output_file = output_dir / f"{name}_hippynn.html"
             plot_pair(name, environments, output_file)

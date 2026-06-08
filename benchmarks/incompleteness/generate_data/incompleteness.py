@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from math import cos, pi, sin, sqrt
+from math import cos, pi, sin
 
 import torch
 
@@ -98,33 +98,6 @@ def create_two_body_envs_original() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_two_body_envs_v2() -> list[IncompletenessEnvironment]:
-    """Pair with equal center-neighbor distances and larger leaf-leaf distances."""
-
-    return [
-        _environment(
-            "two_body",
-            2,
-            0,
-            [
-                [0.0, 0.0, 0.0],
-                [5.0, 0.0, 0.0],
-                [0.0, 5.0, 0.0],
-            ],
-        ),
-        _environment(
-            "two_body",
-            2,
-            1,
-            [
-                [0.0, 0.0, 0.0],
-                [5.0, 0.0, 0.0],
-                [-5.0, 0.0, 0.0],
-            ],
-        ),
-    ]
-
-
 def create_three_body_envs_original() -> list[IncompletenessEnvironment]:
     """Pair indistinguishable by centered 3-body distance/angle scalars."""
 
@@ -160,30 +133,6 @@ def create_three_body_envs_original() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_three_body_envs_v2() -> list[IncompletenessEnvironment]:
-    """V2 pair indistinguishable by centered 3-body distance/angle scalars."""
-
-    radius = 5.0
-    env0 = [
-        [0.0, 0.0, 0.0],
-        [radius * sqrt(3.0 / 7.0), radius * sqrt(3.0) / 7.0, -5.0 * radius / 7.0],
-        [-radius * sqrt(3.0 / 7.0), radius * sqrt(3.0) / 7.0, -5.0 * radius / 7.0],
-        [0.0, radius * 4.0 * sqrt(3.0) / 7.0, radius / 7.0],
-        [0.0, 0.0, radius],
-    ]
-    env1 = [
-        [0.0, 0.0, 0.0],
-        [-radius / sqrt(7.0), radius * sqrt(6.0 / 7.0), 0.0],
-        [-radius / sqrt(7.0), 0.0, radius * sqrt(6.0 / 7.0)],
-        [-radius / sqrt(7.0), 0.0, -radius * sqrt(6.0 / 7.0)],
-        [-radius / sqrt(7.0), -radius * sqrt(6.0 / 7.0), 0.0],
-    ]
-    return [
-        _environment("three_body", 3, 0, env0),
-        _environment("three_body", 3, 1, env1),
-    ]
-
-
 def create_four_body_nonchiral_envs_original() -> list[IncompletenessEnvironment]:
     """Pair indistinguishable by non-oriented centered 4-body scalars."""
 
@@ -210,29 +159,6 @@ def create_four_body_nonchiral_envs_original() -> list[IncompletenessEnvironment
     ]
 
 
-def create_four_body_nonchiral_envs_v2() -> list[IncompletenessEnvironment]:
-    """V2 pair indistinguishable by non-oriented centered 4-body scalars."""
-
-    radius = 5.0
-    eps = 0.02
-    y = radius / 3.0
-    rho = radius * 2.0 * sqrt(2.0) / 3.0
-    phis = [
-        0.0,
-        2.0 * pi / 3.0 + eps,
-        4.0 * pi / 3.0 - 0.7 * eps,
-    ]
-    upper_ring = [[rho * cos(phi), y, rho * sin(phi)] for phi in phis]
-    q = _rotation_y_matrix(5.0 * pi / 3.0 + 0.4 * eps)
-    lower_ring = [_rotate_row((x, -yy, z), q) for x, yy, z in upper_ring]
-
-    common = [[0.0, 0.0, 0.0]] + upper_ring + lower_ring
-    return [
-        _environment("four_body_nonchiral", 4, 0, common + [[0.0, radius, 0.0]]),
-        _environment("four_body_nonchiral", 4, 1, common + [[0.0, -radius, 0.0]]),
-    ]
-
-
 def create_four_body_chiral_envs_original() -> list[IncompletenessEnvironment]:
     """Pair from the notebook's chiral 4-body counterexample."""
 
@@ -248,67 +174,28 @@ def create_four_body_chiral_envs_original() -> list[IncompletenessEnvironment]:
     ]
 
 
-def create_four_body_chiral_envs_v2() -> list[IncompletenessEnvironment]:
-    """V2 mirror pair with identical distance signatures and opposite chirality."""
-
-    env0 = [
-        [0.0, 0.0, 0.0],
-        [4.7704242, -1.49614125, 0.06792965],
-        [2.0568787, 2.07317445, 4.05847235],
-        [-2.0992447, -2.54320920, -3.75835850],
-        [-4.1399247, 0.60173985, 2.73841790],
-    ]
-    env1 = [[x, -y, z] for x, y, z in env0]
-    return [
-        _environment("four_body_chiral", 4, 0, env0),
-        _environment("four_body_chiral", 4, 1, env1),
-    ]
-
-
 INCOMPLETENESS_DATASET_BUILDERS = {
-    # coordinate_set selects which version of the incompleteness dataset is created.
-    "v2": {
-        "two_body": create_two_body_envs_v2,
-        "three_body": create_three_body_envs_v2,
-        "four_body_nonchiral": create_four_body_nonchiral_envs_v2,
-        "four_body_chiral": create_four_body_chiral_envs_v2,
-    },
-    "original": {
-        "two_body": create_two_body_envs_original,
-        "three_body": create_three_body_envs_original,
-        "four_body_nonchiral": create_four_body_nonchiral_envs_original,
-        "four_body_chiral": create_four_body_chiral_envs_original,
-    },
+    "two_body": create_two_body_envs_original,
+    "three_body": create_three_body_envs_original,
+    "four_body_nonchiral": create_four_body_nonchiral_envs_original,
+    "four_body_chiral": create_four_body_chiral_envs_original,
 }
 
 
-def create_incompleteness_pair(
-    name: str,
-    *,
-    coordinate_set: str = "v2",
-) -> list[IncompletenessEnvironment]:
+def create_incompleteness_pair(name: str) -> list[IncompletenessEnvironment]:
     """Create one named counterexample pair."""
 
     try:
-        builders = INCOMPLETENESS_DATASET_BUILDERS[coordinate_set]
-    except KeyError as exc:
-        valid = ", ".join(INCOMPLETENESS_DATASET_BUILDERS)
-        raise ValueError(f"Unknown coordinate_set {coordinate_set!r}. Expected one of: {valid}.") from exc
-
-    try:
-        return builders[name]()
+        return INCOMPLETENESS_DATASET_BUILDERS[name]()
     except KeyError as exc:
         valid = ", ".join(COUNTEREXAMPLE_NAMES)
         raise ValueError(f"Unknown counterexample {name!r}. Expected one of: {valid}.") from exc
 
 
-def create_all_incompleteness_pairs(
-    *,
-    coordinate_set: str = "v2",
-) -> dict[str, list[IncompletenessEnvironment]]:
+def create_all_incompleteness_pairs() -> dict[str, list[IncompletenessEnvironment]]:
     """Create every incompleteness counterexample pair."""
 
-    return {name: create_incompleteness_pair(name, coordinate_set=coordinate_set) for name in COUNTEREXAMPLE_NAMES}
+    return {name: create_incompleteness_pair(name) for name in COUNTEREXAMPLE_NAMES}
 
 
 def center_leaf_edge_tensors(
