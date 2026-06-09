@@ -21,6 +21,22 @@ absolute orientation, 3D tilt, or node count.
 
 The topology is undirected and, by default, contains center-to-inner edges and
 inner-to-outer spoke edges. Ring-cycle edges can be enabled with flags if desired.
+
+3D:
+python rotating_ring_dataset.py \
+  --n-graphs 500 \
+  --seed 7 \
+  --outer-3d-rotation-deg 70 \
+  --outer-3d-axis-deg 35 \
+  --out rotating_ring_dataset_outer3d.pt \
+  --html rotating_ring_viewer_outer3d.html
+
+2D:
+python rotating_ring_dataset.py \
+  --n-graphs 500 \
+  --seed 7 \
+  --out rotating_ring_dataset.pt \
+  --html rotating_ring_viewer.html
 """
 
 from __future__ import annotations
@@ -238,17 +254,20 @@ def ring_graph_edge_index(
     add_outer_ring_edges: bool = False,
     add_center_outer_edges: bool = False,
 ) -> torch.Tensor:
-    """Build the default undirected topology for a ring graph.
+    """Build the undirected topology for a center-spoke ring graph.
 
     Node indexing convention:
         0                         center
         1 .. n_inner              inner ring
         1 + n_inner .. end        outer ring
 
-    For n_outer != n_inner, each outer node is connected to the nearest matching
-    inner index by fractional progress around the circle. The default dataset
-    keeps n_outer constant and equal to n_inner, but this makes future changes
-    straightforward.
+    By default every non-center node connects directly to the center. There are
+    no inner-to-outer spoke edges, so changing outer-ring rotation or tilt keeps
+    exactly the same node positions while changing only where the center spokes
+    point.
+
+    The optional ring-cycle flags still add edges within the inner and/or outer
+    rings when explicitly requested.
     """
 
     if n_inner <= 0:
@@ -261,18 +280,18 @@ def ring_graph_edge_index(
     outer_start = 1 + n_inner
     edges: list[tuple[int, int]] = []
 
-    # Spokes from center to inner ring.
+    # Spokes from the center to every inner-ring node.
     for i in range(n_inner):
         edges.append((center, inner_start + i))
 
-    # Spokes from inner ring to outer ring.
+    # Spokes from the center directly to every outer-ring node.
     for j in range(n_outer):
-        mapped_inner = int(round(j * n_inner / n_outer)) % n_inner
-        edges.append((inner_start + mapped_inner, outer_start + j))
+        edges.append((center, outer_start + j))
 
+    # Kept for backward CLI compatibility. Center-to-outer edges are now the
+    # default topology, so this flag does not add any additional edges.
     if add_center_outer_edges:
-        for j in range(n_outer):
-            edges.append((center, outer_start + j))
+        pass
 
     if add_inner_ring_edges:
         for i in range(n_inner):
