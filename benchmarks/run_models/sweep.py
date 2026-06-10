@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain")
     parser.add_argument("--k", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--counterexamples", choices=COUNTEREXAMPLE_NAMES, nargs="+", default=list(COUNTEREXAMPLE_NAMES))
-    parser.add_argument("--epochs", type=int, default=2000)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])

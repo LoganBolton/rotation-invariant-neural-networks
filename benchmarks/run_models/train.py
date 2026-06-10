@@ -129,7 +129,7 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="HIP-HOP-NN is still in a beta state.*")
         if neighborhood_cutoff == "edges":
-            edge_indices = inputs.PreDefinedEdgeIndicesNode(db_name="edge_indices")
+            edge_indices = inputs.PredefinedEdgeIndicesNode(db_name="edge_indices")
             network = network_class("geometric_model", (species, positions, edge_indices), module_kwargs=network_params)
             graph_inputs = [species, positions, edge_indices]
         else:
