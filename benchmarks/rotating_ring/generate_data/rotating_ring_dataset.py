@@ -28,14 +28,12 @@ python generate_data/rotating_ring_dataset.py \
   --seed 7 \
   --outer-3d-rotation-deg 70 \
   --outer-3d-axis-deg 35 \
-  --out rotating_ring_dataset_outer3d.pt \
   --html generate_data/original_visualizations/rotating_ring_viewer_outer3d.html
 
 2D:
 python generate_data/rotating_ring_dataset.py \
   --n-graphs 500 \
   --seed 7 \
-  --out rotating_ring_dataset.pt \
   --html generate_data/original_visualizations/rotating_ring_viewer.html
 """
 
@@ -580,13 +578,14 @@ def as_padded_ring_arrays(
     """Stack ring graph environments into padded tensors.
 
     Returns keys compatible with the style of the provided helper file:
-        Z, R, T, edge_index
+        Z, R, T, edge_index, edge_indices
 
     It also returns:
         node_role, node_mask, graph_index, node_counts
 
     `edge_index` is a compressed atom-indexed edge list over the real atoms in
-    all systems. It does not include padding nodes.
+    all systems. It does not include padding nodes. `edge_indices` is padded per
+    graph for HIP-NN's predefined-neighbor input.
     """
 
     if not environments:
@@ -602,6 +601,8 @@ def as_padded_ring_arrays(
     node_mask = torch.zeros((n_systems, max_nodes), dtype=torch.get_default_dtype())
     labels = torch.empty((n_systems, 1), dtype=torch.get_default_dtype())
     node_counts = torch.empty((n_systems,), dtype=torch.long)
+    max_edges = max(env.edge_index.shape[1] for env in environments)
+    edge_indices = torch.full((n_systems, 2, max_edges), -1, dtype=torch.long)
     graph_index_parts: list[torch.Tensor] = []
     edge_index_parts: list[torch.Tensor] = []
 
@@ -618,6 +619,7 @@ def as_padded_ring_arrays(
         node_mask[sample_index, :n_nodes] = 1.0
         labels[sample_index, 0] = float(env.label)
         node_counts[sample_index] = n_nodes
+        edge_indices[sample_index, :, : env.edge_index.shape[1]] = env.edge_index
 
         edge_index_parts.append(env.edge_index + atom_offset)
         graph_index_parts.append(torch.full((n_nodes,), sample_index, dtype=torch.long))
@@ -631,6 +633,7 @@ def as_padded_ring_arrays(
         "R": positions,
         "T": labels,
         "edge_index": edge_index,
+        "edge_indices": edge_indices,
         "node_role": node_role,
         "node_mask": node_mask,
         "graph_index": graph_index,
@@ -672,52 +675,18 @@ def as_pyg_data_list(environments: list[RingGraphEnvironment]) -> list[Any]:
     return data_list
 
 
-def save_ring_dataset(
-    environments: list[RingGraphEnvironment],
-    path: str | Path,
-    *,
-    center_on_central_node: bool = True,
-) -> None:
-    """Save padded tensors plus metadata to a torch .pt file."""
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "format": "rotating_ring_graph_dataset_v3_outer_3d",
-        "class_names": RING_GRAPH_CLASS_NAMES,
-        "arrays": as_padded_ring_arrays(environments, center_on_central_node=center_on_central_node),
-        "metadata": [
-            {
-                "name": env.name,
-                "label": int(env.label),
-                **dict(env.metadata),
-            }
-            for env in environments
-        ],
-    }
-    torch.save(payload, path)
-
-
-def load_ring_dataset(path: str | Path) -> dict[str, Any]:
-    """Load a dataset saved by save_ring_dataset()."""
-
-    return torch.load(Path(path), map_location="cpu", weights_only=False)
-
-
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate a rotating-ring graph dataset and optional HTML viewer.")
+    parser = argparse.ArgumentParser(description="Generate a rotating-ring HTML viewer.")
     parser.add_argument("--n-graphs", type=int, default=500, help="Total number of graphs across both classes.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--n-inner", type=int, default=8, help="Number of inner-ring nodes.")
     parser.add_argument("--n-outer", type=int, default=8, help="Number of outer-ring nodes. Kept constant across samples.")
-    parser.add_argument("--out", type=Path, default=Path("rotating_ring_dataset.pt"), help="Output torch .pt path.")
     parser.add_argument("--html", type=Path, default=DEFAULT_VISUALIZATION_DIR / "rotating_ring_viewer.html", help="Output HTML viewer path.")
-    parser.add_argument("--no-html", action="store_true", help="Only save the .pt dataset; do not write a viewer.")
     parser.add_argument("--viewer-max-graphs", type=int, default=500, help="Max graphs included in the HTML slider.")
     parser.add_argument("--inner-radius-min", type=float, default=1.0)
     parser.add_argument("--inner-radius-max", type=float, default=1.8)
@@ -786,17 +755,13 @@ def main() -> None:
         add_outer_ring_edges=args.add_outer_ring_edges,
         add_center_outer_edges=args.add_center_outer_edges,
     )
-    save_ring_dataset(envs, args.out)
-    print(f"saved {len(envs)} graphs to {args.out}")
+    try:
+        from .rotating_ring_viewer import VIEWER_VERSION, write_ring_graph_viewer
+    except ImportError:
+        from rotating_ring_viewer import VIEWER_VERSION, write_ring_graph_viewer
 
-    if not args.no_html:
-        try:
-            from .rotating_ring_viewer import VIEWER_VERSION, write_ring_graph_viewer
-        except ImportError:
-            from rotating_ring_viewer import VIEWER_VERSION, write_ring_graph_viewer
-
-        write_ring_graph_viewer(envs, args.html, max_graphs=args.viewer_max_graphs)
-        print(f"saved viewer to {args.html} using viewer version {VIEWER_VERSION}")
+    write_ring_graph_viewer(envs, args.html, max_graphs=args.viewer_max_graphs)
+    print(f"saved viewer for {len(envs)} graphs to {args.html} using viewer version {VIEWER_VERSION}")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import warnings
+from math import pi
 from pathlib import Path
 
 BENCHMARKS_ROOT = Path(__file__).resolve().parents[1]
@@ -24,17 +25,37 @@ from incompleteness.generate_data.incompleteness import (
 )
 from k_chain.generate_data.kchains import as_hippynn_arrays as as_kchain_arrays
 from k_chain.generate_data.kchains import create_kchains
+from rotating_ring.generate_data.rotating_ring_dataset import (
+    as_hippynn_arrays as as_rotating_ring_arrays,
+    create_rotating_ring_dataset,
+)
 
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).with_name(".matplotlib-cache")))
 os.environ.setdefault("HIPPYNN_USE_CUSTOM_KERNELS", "False")
 
 EDGE_NEIGHBORHOOD_DIST_HARD_MAX = 1.0e6
+DEFAULT_DIST_SOFT_MIN = 1.0
+ROTATING_RING_DIST_SOFT_MIN = 0.5
+
+
+def default_dist_soft_min(dataset: str) -> float:
+    return ROTATING_RING_DIST_SOFT_MIN if dataset == "rotating_ring" else DEFAULT_DIST_SOFT_MIN
+
+
+def effective_dist_soft_min(args: argparse.Namespace) -> float:
+    value = getattr(args, "dist_soft_min", None)
+    return default_dist_soft_min(args.dataset) if value is None else value
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain", help="Benchmark dataset to train on.")
+    parser.add_argument(
+        "--dataset",
+        choices=["k_chain", "incompleteness", "rotating_ring"],
+        default="k_chain",
+        help="Benchmark dataset to train on.",
+    )
     parser.add_argument("--k", type=int, default=4, help="Number of middle chain nodes.")
     parser.add_argument(
         "--counterexample",
@@ -56,7 +77,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-atom-layers", type=int, default=2, help="Atom layers inside each interaction block.")
     parser.add_argument("--n-features", type=int, default=32, help="HIP-NN feature width.")
     parser.add_argument("--n-sensitivities", type=int, default=32, help="Number of sensitivity functions.")
-    parser.add_argument("--dist-soft-min", type=float, default=1.0)
+    parser.add_argument(
+        "--dist-soft-min",
+        type=float,
+        default=None,
+        help="Sensitivity soft minimum. Defaults to 0.5 for rotating_ring and 1.0 otherwise.",
+    )
     parser.add_argument(
         "--dist-soft-max",
         type=float,
@@ -66,6 +92,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dist-hard-max", type=float, default=6.5)
     parser.add_argument("--l-max", type=int, default=2, help="HIP-HOP angular order.")
     parser.add_argument("--n-max", type=int, default=3, help="HIP-HOP radial tensor order.")
+    parser.add_argument("--ring-n-graphs", type=int, default=500, help="Number of rotating-ring graphs to generate.")
+    parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
+    parser.add_argument("--ring-n-inner", type=int, default=8, help="Number of rotating-ring inner nodes.")
+    parser.add_argument("--ring-n-outer", type=int, default=8, help="Number of rotating-ring outer nodes.")
+    parser.add_argument(
+        "--ring-outer-3d-rotation-deg",
+        type=float,
+        default=0.0,
+        help="Maximum out-of-plane outer-ring tilt in degrees for rotating-ring generation.",
+    )
+    parser.add_argument(
+        "--ring-outer-3d-axis-deg",
+        type=float,
+        default=0.0,
+        help="In-plane direction of the rotating-ring outer tilt axis in degrees.",
+    )
     parser.add_argument("--stop-at-accuracy", type=float, default=1.0, help="Early-stop once this margin accuracy is reached.")
     parser.add_argument("--success-margin", type=float, default=0.1, help="Report margin accuracy using this logit margin.")
     return parser.parse_args()
@@ -83,6 +125,16 @@ def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str
             as_incompleteness_arrays(create_incompleteness_pair(args.counterexample)),
             f"{args.counterexample} incompleteness pair",
         )
+    if args.dataset == "rotating_ring":
+        environments = create_rotating_ring_dataset(
+            n_graphs=getattr(args, "ring_n_graphs", 500),
+            seed=getattr(args, "ring_seed", 0),
+            n_inner=getattr(args, "ring_n_inner", 8),
+            n_outer=getattr(args, "ring_n_outer", 8),
+            outer_3d_rotation_range=(0.0, getattr(args, "ring_outer_3d_rotation_deg", 0.0) * pi / 180.0),
+            outer_3d_axis_angle=getattr(args, "ring_outer_3d_axis_deg", 0.0) * pi / 180.0,
+        )
+        return as_rotating_ring_arrays(environments), f"{len(environments)} rotating-ring graphs"
     raise ValueError(f"Unknown dataset {args.dataset!r}.")
 
 
@@ -105,7 +157,7 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
         "possible_species": [0, 1],
         "n_features": args.n_features,
         "n_sensitivities": args.n_sensitivities,
-        "dist_soft_min": args.dist_soft_min,
+        "dist_soft_min": effective_dist_soft_min(args),
         "dist_soft_max": dist_soft_max,
         "dist_hard_max": dist_hard_max,
         "n_interaction_layers": args.n_interaction_layers,

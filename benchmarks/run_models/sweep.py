@@ -3,6 +3,7 @@
 Example run:
 `uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/system_node`
 uv run python benchmarks/run_models/sweep.py --dataset k_chain --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/k_chain/results/system_node
+uv run python benchmarks/run_models/sweep.py --dataset rotating_ring --neighborhood-cutoff edges --hard-cutoffs 4 5 --model-configs default --output-dir benchmarks/rotating_ring/results/system_original_edges
 """
 
 
@@ -29,33 +30,73 @@ from run_models.train import train
 
 # Specify model type, max_l, max_n
 DEFAULT_MODEL_CONFIGS = (
-    ("hipnn", 0, 1),
+    ("hiphop", 0, 1),
+    ("hiphop", 1, 1),
     ("hiphop", 1, 2),
+    ("hiphop", 1, 3),
+    ("hiphop", 1, 4),
+    ("hiphop", 2, 1),
     ("hiphop", 2, 2),
     ("hiphop", 2, 3),
+    ("hiphop", 2, 4),
+    ("hiphop", 3, 1),
     ("hiphop", 3, 2),
-    ("hiphop", 3, 4),
+    ("hiphop", 3, 3),
+    ("hiphop", 3, 4)
 )
+DEFAULT_DIST_SOFT_MIN = 1.0
+ROTATING_RING_DIST_SOFT_MIN = 0.5
+
+
+def default_dist_soft_min(dataset: str) -> float:
+    return ROTATING_RING_DIST_SOFT_MIN if dataset == "rotating_ring" else DEFAULT_DIST_SOFT_MIN
+
+
+def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
+    if args.dist_soft_min is None:
+        args.dist_soft_min = default_dist_soft_min(args.dataset)
+    return args
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=["k_chain", "incompleteness"], default="k_chain")
+    parser.add_argument("--dataset", choices=["k_chain", "incompleteness", "rotating_ring"], default="k_chain")
     parser.add_argument("--k", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--counterexamples", choices=COUNTEREXAMPLE_NAMES, nargs="+", default=list(COUNTEREXAMPLE_NAMES))
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
-    parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 2, 3, 4])
-    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[4.0, 5.0, 5.6, 10.0, 14.0])
+    parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 4])
+    parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[4.0])
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--n-atom-layers", type=int, default=2)
     parser.add_argument("--n-features", type=int, default=32)
     parser.add_argument("--n-sensitivities", type=int, default=32)
-    parser.add_argument("--dist-soft-min", type=float, default=1.0)
+    parser.add_argument(
+        "--dist-soft-min",
+        type=float,
+        default=None,
+        help="Sensitivity soft minimum. Defaults to 0.5 for rotating_ring and 1.0 otherwise.",
+    )
     parser.add_argument("--l-max", type=int, default=2)
     parser.add_argument("--n-max", type=int, default=3)
+    parser.add_argument("--ring-n-graphs", type=int, default=100, help="Number of rotating-ring graphs to generate.")
+    parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
+    parser.add_argument("--ring-n-inner", type=int, default=3, help="Number of rotating-ring inner nodes.")
+    parser.add_argument("--ring-n-outer", type=int, default=3, help="Number of rotating-ring outer nodes.")
+    parser.add_argument(
+        "--ring-outer-3d-rotation-deg",
+        type=float,
+        default=0.0,
+        help="Maximum out-of-plane outer-ring tilt in degrees for rotating-ring generation.",
+    )
+    parser.add_argument(
+        "--ring-outer-3d-axis-deg",
+        type=float,
+        default=0.0,
+        help="In-plane direction of the rotating-ring outer tilt axis in degrees.",
+    )
     parser.add_argument(
         "--model-configs",
         nargs="+",
@@ -131,10 +172,44 @@ def config_dict(args: argparse.Namespace) -> dict[str, object]:
     return config
 
 
+def format_result_logits(args: argparse.Namespace, results: list[dict[str, object]]) -> object:
+    if args.dataset != "rotating_ring":
+        return [[round(value, 3) for value in result["logits"]] for result in results]
+
+    summaries = []
+    for result in results:
+        logits = result["logits"]
+        midpoint = len(logits) // 2
+        by_class = []
+        for label, class_logits in enumerate((logits[:midpoint], logits[midpoint:])):
+            if class_logits:
+                mean = sum(class_logits) / len(class_logits)
+                minimum = min(class_logits)
+                maximum = max(class_logits)
+            else:
+                mean = minimum = maximum = float("nan")
+            by_class.append(
+                {
+                    "label": label,
+                    "mean": round(mean, 3),
+                    "min": round(minimum, 3),
+                    "max": round(maximum, 3),
+                }
+            )
+        summaries.append(by_class)
+    return summaries
+
+
 def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
+    normalize_args(args)
     torch.set_num_threads(1)
 
-    dataset_items = args.k if args.dataset == "k_chain" else args.counterexamples
+    if args.dataset == "k_chain":
+        dataset_items = args.k
+    elif args.dataset == "incompleteness":
+        dataset_items = args.counterexamples
+    else:
+        dataset_items = ["rotating_ring"]
     total_runs = len(dataset_items) * len(args.hard_cutoffs) * len(args.interaction_layers) * len(args.seeds)
     run_index = 0
 
@@ -150,7 +225,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
             file=output,
         )
         item_header = "k"
-    else:
+    elif args.dataset == "incompleteness":
         print(
             f"Sweeping {args.model} with {args.neighborhood_cutoff} neighborhood "
             f"on incompleteness {args.counterexamples} with seeds={args.seeds}",
@@ -158,6 +233,14 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
             file=output,
         )
         item_header = "counterexample"
+    else:
+        print(
+            f"Sweeping {args.model} with {args.neighborhood_cutoff} neighborhood "
+            f"on rotating-ring n_graphs={args.ring_n_graphs} with seeds={args.seeds}",
+            flush=True,
+            file=output,
+        )
+        item_header = "dataset"
     print(f"Using params l-max: {args.l_max} and n-max: {args.n_max}", flush=True, file=output)
     print(f"Running {total_runs} trainings: {args.epochs} epochs max each", flush=True, file=output)
     print(f"success requires correct signs with logit margin >= {args.success_margin}", flush=True, file=output)
@@ -178,6 +261,12 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         dataset=args.dataset,
                         k=dataset_item if args.dataset == "k_chain" else args.k[0],
                         counterexample=dataset_item if args.dataset == "incompleteness" else args.counterexamples[0],
+                        ring_n_graphs=args.ring_n_graphs,
+                        ring_seed=args.ring_seed,
+                        ring_n_inner=args.ring_n_inner,
+                        ring_n_outer=args.ring_n_outer,
+                        ring_outer_3d_rotation_deg=args.ring_outer_3d_rotation_deg,
+                        ring_outer_3d_axis_deg=args.ring_outer_3d_axis_deg,
                         epochs=args.epochs,
                         seed=seed,
                         model=args.model,
@@ -200,7 +289,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                 successes = sum(result["margin_accuracy"] >= 1.0 for result in results)
                 accuracies = [round(result["accuracy"], 3) for result in results]
                 margin_accuracies = [round(result["margin_accuracy"], 3) for result in results]
-                logits = [[round(value, 3) for value in result["logits"]] for result in results]
+                logits = format_result_logits(args, results)
                 item_text = f"{dataset_item:2d}" if args.dataset == "k_chain" else f"{dataset_item:22s}"
                 print(
                     f"{successes}/{len(results)} | {item_text} | {hard_cutoff:10.2f} | {n_layers:6d} | "
@@ -243,7 +332,7 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    args = parse_args()
+    args = normalize_args(parse_args())
     if args.model_configs is not None:
         run_model_config_batch(args)
         return
