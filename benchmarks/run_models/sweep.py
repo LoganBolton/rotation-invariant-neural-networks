@@ -44,6 +44,13 @@ DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 3, 3),
     ("hiphop", 3, 4)
 )
+
+# DEFAULT_MODEL_CONFIGS = (
+#     ("hiphop", 0, 1),
+#     ("hiphop", 1, 4),
+#     ("hiphop", 2, 4),
+#     ("hiphop", 3, 4)
+# )
 DEFAULT_DIST_SOFT_MIN = 1.0
 ROTATING_RING_DIST_SOFT_MIN = 0.5
 

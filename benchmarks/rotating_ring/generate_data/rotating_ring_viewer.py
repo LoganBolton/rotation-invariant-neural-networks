@@ -30,8 +30,8 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-v4"
-VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-v4"
+VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-v6"
+VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-v6"
 
 
 # -----------------------------------------------------------------------------
@@ -443,6 +443,7 @@ def write_ring_graph_viewer(
     const playButton = document.getElementById("play-button");
 
     const config = {{responsive: true, displaylogo: false}};
+    let isProgrammaticCameraUpdate = false;
 
     function cloneObject(value) {{
       if (value === null || value === undefined) return null;
@@ -464,6 +465,21 @@ def write_ring_graph_viewer(
       const camera = getCurrentCamera();
       if (camera) storedCamera = camera;
       return storedCamera ? cloneObject(storedCamera) : null;
+    }}
+
+    function attachCameraListener() {{
+      if (!plotDiv || plotDiv.__ringCameraListenerAttached || typeof plotDiv.on !== "function") return;
+      plotDiv.__ringCameraListenerAttached = true;
+      plotDiv.on("plotly_relayout", (eventData) => {{
+        if (isProgrammaticCameraUpdate) return;
+
+        if (eventData && eventData["scene.camera"]) {{
+          storedCamera = cloneObject(eventData["scene.camera"]);
+        }} else {{
+          const camera = getCurrentCamera();
+          if (camera) storedCamera = camera;
+        }}
+      }});
     }}
 
     function currentClassGraphs() {{
@@ -565,10 +581,18 @@ def write_ring_graph_viewer(
       slider.value = String(index);
 
       const graph = graphs[index];
-      const camera = rememberCurrentCamera();
+      const camera = storedCamera ? cloneObject(storedCamera) : getCurrentCamera();
       Plotly.react(plotDiv, makeTraces(graph), makeLayout(graph, camera), config).then(() => {{
-        if (storedCamera) {{
-          Plotly.relayout(plotDiv, {{"scene.camera": cloneObject(storedCamera)}});
+        attachCameraListener();
+        if (camera) {{
+          storedCamera = cloneObject(camera);
+          isProgrammaticCameraUpdate = true;
+          const relayoutPromise = Plotly.relayout(plotDiv, {{"scene.camera": cloneObject(camera)}});
+          Promise.resolve(relayoutPromise).then(() => {{
+            isProgrammaticCameraUpdate = false;
+          }}, () => {{
+            isProgrammaticCameraUpdate = false;
+          }});
         }}
       }});
       status.textContent = `${{graph.classDisplay}} graph ${{index + 1}}/${{graphs.length}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
@@ -616,6 +640,7 @@ def write_ring_graph_viewer(
       updatePlot();
     }});
     playButton.addEventListener("click", togglePlay);
+
 
     window.addEventListener("keydown", (event) => {{
       if (event.key === "ArrowLeft") {{
