@@ -561,12 +561,12 @@ def write_ring_graph_viewer(
     }}
 
     function setActiveClass(label) {{
-      const fraction = currentSliderFraction();
       activeClass = String(label);
       const graphs = currentClassGraphs();
       const maxIndex = Math.max(graphs.length - 1, 0);
       slider.max = String(maxIndex);
-      slider.value = String(Math.round(fraction * maxIndex));
+      // When switching classes, always restart at the beginning of the selected class.
+      slider.value = "0";
       updatePlot();
     }}
 
