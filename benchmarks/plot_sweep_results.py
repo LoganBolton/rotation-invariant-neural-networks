@@ -102,7 +102,7 @@ def model_sort_key(log_file: Path) -> tuple[int, int, str]:
     match = re.fullmatch(r"l(?P<l_max>\d+)_n(?P<n_max>\d+)", log_file.stem)
     if match is None:
         return (10_000, 10_000, log_file.stem)
-    return (int(match.group("n_max")), int(match.group("l_max")), log_file.stem)
+    return (int(match.group("l_max")), int(match.group("n_max")), log_file.stem)
 
 
 def result_log_files(result_dir: Path) -> list[Path]:

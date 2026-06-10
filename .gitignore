@@ -12,6 +12,7 @@ build/
 **/*.ipynb_checkpoints/
 **/__pycache__/
 **/*.png
+**/results/**/*.md
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
 benchmarks/incompleteness/generate_data/*.html
