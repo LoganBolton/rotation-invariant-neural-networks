@@ -142,7 +142,7 @@ def summarize_capture(
     *,
     node_counts: torch.Tensor,
     labels: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     n_atoms = int(node_counts.sum().item())
     if capture.shape[0] % n_atoms != 0:
         raise ValueError(f"Cannot reshape capture with shape {tuple(capture.shape)} over {n_atoms} atoms.")
@@ -165,24 +165,57 @@ def summarize_capture(
     feature_pooled_std = torch.sqrt((feature_class_stds[0].pow(2) + feature_class_stds[1].pow(2)) / 2.0).clamp_min(1.0e-12)
     feature_standardized_delta = (feature_class_means[1] - feature_class_means[0]) / feature_pooled_std
 
-    return center_by_graph, class_means, standardized_delta, feature_standardized_delta
+    return center_by_graph, class_means, class_stds, standardized_delta, feature_standardized_delta
 
 
-def write_summary_csv(path: Path, class_means: torch.Tensor, standardized_delta: torch.Tensor) -> None:
+def write_summary_csv(path: Path, class_means: torch.Tensor, class_stds: torch.Tensor, standardized_delta: torch.Tensor) -> None:
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["invariant_index", "class0_center_mean", "class1_center_mean", "class1_minus_class0", "standardized_delta"])
+        writer.writerow(
+            [
+                "invariant_index",
+                "class0_center_mean",
+                "class0_center_std",
+                "class0_center_variance",
+                "class1_center_mean",
+                "class1_center_std",
+                "class1_center_variance",
+                "class1_minus_class0",
+                "standardized_delta",
+            ]
+        )
         for i in range(class_means.shape[1]):
             diff = class_means[1, i] - class_means[0, i]
             writer.writerow(
                 [
                     i,
                     f"{float(class_means[0, i]):.8g}",
+                    f"{float(class_stds[0, i]):.8g}",
+                    f"{float(class_stds[0, i].pow(2)):.8g}",
                     f"{float(class_means[1, i]):.8g}",
+                    f"{float(class_stds[1, i]):.8g}",
+                    f"{float(class_stds[1, i].pow(2)):.8g}",
                     f"{float(diff):.8g}",
                     f"{float(standardized_delta[i]):.8g}",
                 ]
             )
+
+
+def write_center_values_csv(path: Path, values: torch.Tensor, labels: torch.Tensor) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["graph_index", "label", "invariant_index", "center_value"])
+        for graph_index in range(values.shape[0]):
+            label = int(labels[graph_index].item())
+            for invariant_index in range(values.shape[1]):
+                writer.writerow(
+                    [
+                        graph_index,
+                        label,
+                        invariant_index,
+                        f"{float(values[graph_index, invariant_index]):.8g}",
+                    ]
+                )
 
 
 def plot_invariants(path: Path, values: torch.Tensor, labels: torch.Tensor, standardized_delta: torch.Tensor, title: str) -> None:
@@ -282,17 +315,19 @@ def main() -> None:
     ]
 
     for layer_index, (name, capture) in enumerate(captures.items()):
-        values, class_means, standardized_delta, feature_standardized_delta = summarize_capture(
+        values, class_means, class_stds, standardized_delta, feature_standardized_delta = summarize_capture(
             capture,
             node_counts=arrays["node_counts"].cpu(),
             labels=labels.cpu(),
         )
         safe_name = f"layer{layer_index}"
         csv_path = args.output_dir / f"{safe_name}_center_invariants.csv"
+        values_csv_path = args.output_dir / f"{safe_name}_center_invariant_values.csv"
         png_path = args.output_dir / f"{safe_name}_center_invariants.png"
         feature_csv_path = args.output_dir / f"{safe_name}_feature_invariant_deltas.csv"
         feature_png_path = args.output_dir / f"{safe_name}_feature_invariant_deltas.png"
-        write_summary_csv(csv_path, class_means, standardized_delta)
+        write_summary_csv(csv_path, class_means, class_stds, standardized_delta)
+        write_center_values_csv(values_csv_path, values, labels.cpu())
         write_feature_delta_csv(feature_csv_path, feature_standardized_delta)
         plot_invariants(
             png_path,
@@ -321,6 +356,7 @@ def main() -> None:
         summary_lines.append(f"  top standardized deltas: {top_text}")
         summary_lines.append(f"  top feature/invariant deltas: {', '.join(feature_top_parts)}")
         summary_lines.append(f"  csv: {csv_path}")
+        summary_lines.append(f"  values_csv: {values_csv_path}")
         summary_lines.append(f"  plot: {png_path}")
         summary_lines.append(f"  feature_delta_csv: {feature_csv_path}")
         summary_lines.append(f"  feature_delta_plot: {feature_png_path}")

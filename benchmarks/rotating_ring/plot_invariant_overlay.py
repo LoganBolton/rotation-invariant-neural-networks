@@ -11,6 +11,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgb
 import torch
 
 
@@ -52,12 +54,19 @@ def read_center_csv(path: Path) -> dict[str, torch.Tensor]:
         for row in csv.DictReader(handle):
             rows.append(row)
 
-    return {
+    result = {
         "index": torch.tensor([int(row["invariant_index"]) for row in rows], dtype=torch.long),
         "class0": torch.tensor([float(row["class0_center_mean"]) for row in rows]),
         "class1": torch.tensor([float(row["class1_center_mean"]) for row in rows]),
         "delta": torch.tensor([float(row["standardized_delta"]) for row in rows]),
     }
+    if rows and "class0_center_std" in rows[0]:
+        result["class0_std"] = torch.tensor([float(row["class0_center_std"]) for row in rows])
+        result["class1_std"] = torch.tensor([float(row["class1_center_std"]) for row in rows])
+    else:
+        result["class0_std"] = torch.zeros_like(result["class0"])
+        result["class1_std"] = torch.zeros_like(result["class1"])
+    return result
 
 
 def read_feature_csv(path: Path) -> torch.Tensor:
@@ -76,6 +85,16 @@ def read_feature_csv(path: Path) -> torch.Tensor:
     values = torch.zeros((max_feature + 1, max_invariant + 1))
     for feature, invariant, value in triples:
         values[feature, invariant] = value
+    return values
+
+
+def read_center_values_csv(path: Path) -> dict[tuple[int, int], list[float]]:
+    values: dict[tuple[int, int], list[float]] = {}
+    with path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            label = int(row["label"])
+            invariant = int(row["invariant_index"])
+            values.setdefault((label, invariant), []).append(float(row["center_value"]))
     return values
 
 
@@ -197,6 +216,244 @@ def plot_overlay(
     plt.close(fig)
 
 
+def plot_overlay_with_variance(
+    path: Path,
+    centers: dict[int, dict[str, torch.Tensor]],
+    feature_deltas: dict[int, torch.Tensor],
+    center_values: dict[int, dict[tuple[int, int], list[float]]],
+) -> None:
+    n_invariants = int(next(iter(centers.values()))["index"].numel())
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
+
+    n_ring_values = sorted(centers)
+    box_width = 0.09
+    offsets = torch.linspace(-0.35, 0.35, len(n_ring_values) * 2)
+    offset_index = 0
+    for n_ring, data in centers.items():
+        x = data["index"].to(torch.float32)
+        for label, color, marker_label in [
+            (0, COLORS[n_ring], f"{run_label(n_ring)}, class 0"),
+            (1, lighten_color(COLORS[n_ring], amount=0.42), f"{run_label(n_ring)}, class 1"),
+        ]:
+            positions = [float(invariant + offsets[offset_index]) for invariant in x]
+            box_data = [center_values[n_ring][(label, int(invariant))] for invariant in x]
+            box = axes[0].boxplot(
+                box_data,
+                positions=positions,
+                widths=box_width,
+                patch_artist=True,
+                showfliers=False,
+                manage_ticks=False,
+            )
+            for patch in box["boxes"]:
+                patch.set_facecolor(color)
+                patch.set_alpha(0.35)
+                patch.set_edgecolor(color)
+                patch.set_linewidth(1.6)
+            for key in ("whiskers", "caps", "medians"):
+                for artist in box[key]:
+                    artist.set_color(color)
+                    artist.set_linewidth(1.5)
+            axes[0].plot([], [], marker="s", linestyle="None", color=color, markersize=8, label=marker_label)
+            offset_index += 1
+
+        axes[1].plot(
+            x,
+            data["delta"],
+            marker="o",
+            color=COLORS[n_ring],
+            linewidth=2.2,
+            markersize=8.5,
+            label=run_label(n_ring),
+        )
+        axes[2].plot(
+            x,
+            feature_deltas[n_ring].abs().max(dim=0).values,
+            marker="o",
+            color=COLORS[n_ring],
+            linewidth=2.2,
+            markersize=8.5,
+            label=run_label(n_ring),
+        )
+
+    axes[0].set_title("Center-node invariant distributions by class")
+    axes[0].set_ylabel("mean invariant value")
+    axes[0].legend(ncol=2)
+
+    axes[1].set_title("Class separation after averaging feature channels")
+    axes[1].axhline(0.0, color="black", linewidth=0.8)
+    axes[1].set_ylabel("standardized class delta")
+    axes[1].legend()
+
+    axes[2].set_title("Strongest feature-specific class separation per invariant")
+    axes[2].set_ylabel("max |standardized delta|")
+    axes[2].set_xlabel("invariant index")
+    axes[2].legend()
+
+    for axis in axes:
+        axis.grid(True, alpha=0.25)
+        axis.set_xticks(torch.arange(n_invariants))
+    axes[0].set_xlim(-0.6, n_invariants - 0.4)
+
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def add_width_line(axis, x: torch.Tensor, y: torch.Tensor, spread: torch.Tensor, *, color: str, linestyle: str, marker: str, label: str) -> None:
+    points = torch.stack([x.to(torch.float32), y.to(torch.float32)], dim=1).numpy()
+    segments = [[points[i], points[i + 1]] for i in range(len(points) - 1)]
+    segment_spread = ((spread[:-1] + spread[1:]) / 2.0).numpy()
+    max_spread = max(float(spread.max().item()), 1.0e-12)
+    widths = 1.4 + 8.0 * (segment_spread / max_spread)
+    collection = LineCollection(segments, colors=color, linewidths=widths, linestyles=linestyle, alpha=0.8)
+    axis.add_collection(collection)
+    axis.plot(x, y, linestyle="None", marker=marker, color=color, markersize=8.0, label=label)
+
+
+def plot_overlay_with_spread_width(path: Path, centers: dict[int, dict[str, torch.Tensor]], feature_deltas: dict[int, torch.Tensor]) -> None:
+    n_invariants = int(next(iter(centers.values()))["index"].numel())
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
+
+    for n_ring, data in centers.items():
+        x = data["index"]
+        add_width_line(
+            axes[0],
+            x,
+            data["class0"],
+            data["class0_std"],
+            color=COLORS[n_ring],
+            linestyle="-",
+            marker="o",
+            label=f"{run_label(n_ring)}, class 0",
+        )
+        add_width_line(
+            axes[0],
+            x,
+            data["class1"],
+            data["class1_std"],
+            color=COLORS[n_ring],
+            linestyle="--",
+            marker="s",
+            label=f"{run_label(n_ring)}, class 1",
+        )
+        axes[1].plot(
+            x,
+            data["delta"],
+            marker="o",
+            color=COLORS[n_ring],
+            linewidth=2.2,
+            markersize=8.5,
+            label=run_label(n_ring),
+        )
+        axes[2].plot(
+            x,
+            feature_deltas[n_ring].abs().max(dim=0).values,
+            marker="o",
+            color=COLORS[n_ring],
+            linewidth=2.2,
+            markersize=8.5,
+            label=run_label(n_ring),
+        )
+
+    axes[0].autoscale()
+    axes[0].set_title("Center-node invariant means with line width scaled by per-class standard deviation")
+    axes[0].set_ylabel("mean invariant value")
+    axes[0].legend(ncol=2)
+
+    axes[1].set_title("Class separation after averaging feature channels")
+    axes[1].axhline(0.0, color="black", linewidth=0.8)
+    axes[1].set_ylabel("standardized class delta")
+    axes[1].legend()
+
+    axes[2].set_title("Strongest feature-specific class separation per invariant")
+    axes[2].set_ylabel("max |standardized delta|")
+    axes[2].set_xlabel("invariant index")
+    axes[2].legend()
+
+    for axis in axes:
+        axis.grid(True, alpha=0.25)
+        axis.set_xticks(torch.arange(n_invariants))
+
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def lighten_color(color: str, amount: float = 0.45) -> tuple[float, float, float]:
+    rgb = torch.tensor(to_rgb(color))
+    white = torch.ones(3)
+    return tuple((rgb + (white - rgb) * amount).tolist())
+
+
+def plot_overlay_with_variance_band(path: Path, centers: dict[int, dict[str, torch.Tensor]], feature_deltas: dict[int, torch.Tensor]) -> None:
+    n_invariants = int(next(iter(centers.values()))["index"].numel())
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
+
+    for n_ring, data in centers.items():
+        x = data["index"].to(torch.float32)
+        class0_color = COLORS[n_ring]
+        class1_color = lighten_color(COLORS[n_ring], amount=0.42)
+
+        for class_label, mean_key, std_key, marker, color in [
+            ("class 0", "class0", "class0_std", "o", class0_color),
+            ("class 1", "class1", "class1_std", "s", class1_color),
+        ]:
+            mean = data[mean_key]
+            std = data[std_key]
+            lower = mean - std
+            upper = mean + std
+            axes[0].fill_between(x, lower, upper, color=color, alpha=0.25, linewidth=0)
+            axes[0].plot(
+                x,
+                mean,
+                marker=marker,
+                color=color,
+                linestyle="-",
+                linewidth=2.2,
+                markersize=8.0,
+                label=f"{run_label(n_ring)}, {class_label}",
+            )
+
+        axes[1].plot(
+            x,
+            data["delta"],
+            marker="o",
+            color=COLORS[n_ring],
+            linewidth=2.2,
+            markersize=8.5,
+            label=run_label(n_ring),
+        )
+        axes[2].plot(
+            x,
+            feature_deltas[n_ring].abs().max(dim=0).values,
+            marker="o",
+            color=COLORS[n_ring],
+            linewidth=2.2,
+            markersize=8.5,
+            label=run_label(n_ring),
+        )
+
+    axes[0].set_title("Center-node invariant means with per-class standard deviation bands")
+    axes[0].set_ylabel("mean invariant value")
+    axes[0].legend(ncol=2)
+
+    axes[1].set_title("Class separation after averaging feature channels")
+    axes[1].axhline(0.0, color="black", linewidth=0.8)
+    axes[1].set_ylabel("standardized class delta")
+    axes[1].legend()
+
+    axes[2].set_title("Strongest feature-specific class separation per invariant")
+    axes[2].set_ylabel("max |standardized delta|")
+    axes[2].set_xlabel("invariant index")
+    axes[2].legend()
+
+    for axis in axes:
+        axis.grid(True, alpha=0.25)
+        axis.set_xticks(torch.arange(n_invariants))
+
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def dataset_row(n_ring: int, capture_shape: str) -> str:
     nodes_per_graph = 1 + 2 * n_ring
     total_nodes = nodes_per_graph * 100
@@ -224,6 +481,9 @@ def write_report(
     overlay_csv: Path,
     overlay_png: Path,
     overlay_log_png: Path | None,
+    overlay_variance_png: Path,
+    overlay_spread_width_png: Path,
+    overlay_variance_band_png: Path,
     args: argparse.Namespace,
     summaries: dict[int, dict[str, str]],
     centers: dict[int, dict[str, torch.Tensor]],
@@ -293,6 +553,9 @@ This compares HIP-HOP invariant runs for {run_list} inner/outer ring-node settin
 ## Overlay Outputs
 
 - Linear-y overlay plot: `{overlay_png}`
+- Variance overlay plot: `{overlay_variance_png}`
+- Spread-width overlay plot: `{overlay_spread_width_png}`
+- Variance-band overlay plot: `{overlay_variance_band_png}`
 {f"- Symlog-y overlay plot: `{overlay_log_png}`" if overlay_log_png is not None else ""}
 - Overlay CSV: `{overlay_csv}`
 
@@ -312,20 +575,28 @@ def main() -> None:
     centers = {}
     feature_deltas = {}
     summaries = {}
+    center_values = {}
     for n_ring, dirname in RUN_DIRS.items():
         run_dir = args.results_root / dirname
         centers[n_ring] = read_center_csv(run_dir / "layer0_center_invariants.csv")
         feature_deltas[n_ring] = read_feature_csv(run_dir / "layer0_feature_invariant_deltas.csv")
+        center_values[n_ring] = read_center_values_csv(run_dir / "layer0_center_invariant_values.csv")
         summaries[n_ring] = read_summary(run_dir / "summary.txt")
 
     overlay_name = "_".join(f"n{n_ring}" for n_ring in sorted(RUN_DIRS)) + "_invariant_overlay"
     overlay_csv = output_dir / f"{overlay_name}.csv"
     overlay_png = output_dir / f"{overlay_name}.png"
+    overlay_variance_png = output_dir / f"{overlay_name}_with_variance.png"
+    overlay_spread_width_png = output_dir / f"{overlay_name}_spread_width.png"
+    overlay_variance_band_png = output_dir / f"{overlay_name}_variance_band.png"
     overlay_log_png = output_dir / f"{overlay_name}_logy.png" if args.write_log_y else None
     overlay_report = output_dir / f"{overlay_name}.md"
 
     write_overlay_csv(overlay_csv, centers, feature_deltas)
     plot_overlay(overlay_png, centers, feature_deltas)
+    plot_overlay_with_variance(overlay_variance_png, centers, feature_deltas, center_values)
+    plot_overlay_with_spread_width(overlay_spread_width_png, centers, feature_deltas)
+    plot_overlay_with_variance_band(overlay_variance_band_png, centers, feature_deltas)
     if overlay_log_png is not None:
         plot_overlay(overlay_log_png, centers, feature_deltas, log_y=True)
     write_report(
@@ -333,6 +604,9 @@ def main() -> None:
         overlay_csv=overlay_csv,
         overlay_png=overlay_png,
         overlay_log_png=overlay_log_png,
+        overlay_variance_png=overlay_variance_png,
+        overlay_spread_width_png=overlay_spread_width_png,
+        overlay_variance_band_png=overlay_variance_band_png,
         args=args,
         summaries=summaries,
         centers=centers,
@@ -340,6 +614,9 @@ def main() -> None:
     )
 
     print(f"wrote {overlay_png}")
+    print(f"wrote {overlay_variance_png}")
+    print(f"wrote {overlay_spread_width_png}")
+    print(f"wrote {overlay_variance_band_png}")
     if overlay_log_png is not None:
         print(f"wrote {overlay_log_png}")
     print(f"wrote {overlay_csv}")
