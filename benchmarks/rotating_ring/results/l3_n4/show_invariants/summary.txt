@@ -1,0 +1,15 @@
+dataset: 100 rotating-ring graphs
+model: hiphop l_max=3 n_max=4
+epochs: 574
+loss: 0.019751
+accuracy: 1.000
+margin_accuracy: 1.000
+
+layer0: moddict.node17.blocks.0.0.base_layer.invars
+  capture_shape: (11200, 13)
+  top standardized deltas: I10=-0.76, I11=-0.51, I5=+0.11, I4=+0.01, I12=-0.00
+  top feature/invariant deltas: F0/I4=+2.15, F0/I5=+1.72, F12/I4=-1.51, F5/I4=-1.50, F4/I4=-1.42, F2/I4=+1.25, F15/I4=+1.23, F15/I5=+1.21
+  csv: benchmarks/rotating_ring/results/show_invariants/layer0_center_invariants.csv
+  plot: benchmarks/rotating_ring/results/show_invariants/layer0_center_invariants.png
+  feature_delta_csv: benchmarks/rotating_ring/results/show_invariants/layer0_feature_invariant_deltas.csv
+  feature_delta_plot: benchmarks/rotating_ring/results/show_invariants/layer0_feature_invariant_deltas.png
