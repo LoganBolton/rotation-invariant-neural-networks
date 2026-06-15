@@ -31,17 +31,8 @@ from run_models.train import train
 # Specify model type, max_l, max_n
 DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 0, 1),
-    ("hiphop", 1, 1),
-    ("hiphop", 1, 2),
-    ("hiphop", 1, 3),
     ("hiphop", 1, 4),
-    ("hiphop", 2, 1),
-    ("hiphop", 2, 2),
-    ("hiphop", 2, 3),
     ("hiphop", 2, 4),
-    ("hiphop", 3, 1),
-    ("hiphop", 3, 2),
-    ("hiphop", 3, 3),
     ("hiphop", 3, 4)
 )
 
