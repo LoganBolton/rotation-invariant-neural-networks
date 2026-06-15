@@ -30,8 +30,8 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-distance-v7"
-VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-distance-v7"
+VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-distance-v8"
+VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-distance-v8"
 
 
 # -----------------------------------------------------------------------------
@@ -372,7 +372,7 @@ def write_ring_graph_viewer(
         ]
     else:
         distance_range = [0.0, 1.0]
-    distance_bin_count = 32
+    distance_bin_count = 80
     distance_bin_size = max(
         1.0e-9,
         (distance_range[1] - distance_range[0]) / float(distance_bin_count),
@@ -547,7 +547,7 @@ def write_ring_graph_viewer(
       <h2>Closest inner-to-outer distances</h2>
       <div id="distance-summary"></div>
       <div id="distance-histogram"></div>
-      <div class="distance-note">Each histogram pools the nearest outer-ring distance for every inner-ring node across the graphs included for that class in this viewer. This makes the angular class separation visible as a distance distribution.</div>
+      <div class="distance-note">Each histogram pools the nearest outer-ring distance for every inner-ring node across the graphs included for that class in this viewer. Bars are histogram bins, not exact individual distances; the summary above reports whether the raw distances overlap.</div>
     </section>
   </div>
 
@@ -671,33 +671,75 @@ def write_ring_graph_viewer(
     function updateDistanceHistogram(graph) {{
       const traces = [];
       const summaryLines = [];
+      const classSummaries = [];
+
       for (const label of classLabels) {{
         const graphs = graphsByClass[label] || [];
         if (graphs.length === 0) continue;
         const first = graphs[0];
         const distances = distancesForClass(label);
         const classSummary = summarizeDistances(distances);
+        classSummaries.push({{label: label, first: first, distances: distances, summary: classSummary}});
         summaryLines.push(
           `${{first.classDisplay}} (${{first.className}}): n=${{classSummary.count}}, min=${{formatDistance(classSummary.min)}}, mean=${{formatDistance(classSummary.mean)}}, max=${{formatDistance(classSummary.max)}}`
         );
+      }}
+
+      let separationLine = "";
+      const shapes = [];
+      const annotations = [];
+      if (classSummaries.length === 2) {{
+        const a = classSummaries[0];
+        const b = classSummaries[1];
+        const left = a.summary.mean <= b.summary.mean ? a : b;
+        const right = a.summary.mean <= b.summary.mean ? b : a;
+        if (Number.isFinite(left.summary.max) && Number.isFinite(right.summary.min)) {{
+          const gap = right.summary.min - left.summary.max;
+          if (gap > 0) {{
+            const boundary = 0.5 * (left.summary.max + right.summary.min);
+            separationLine = `<strong>No raw distance overlap</strong>: max ${{left.first.classDisplay}} = ${{formatDistance(left.summary.max)}}, min ${{right.first.classDisplay}} = ${{formatDistance(right.summary.min)}}, gap = ${{formatDistance(gap)}}.`;
+            shapes.push({{
+              type: "line",
+              xref: "x",
+              yref: "paper",
+              x0: boundary,
+              x1: boundary,
+              y0: 0,
+              y1: 1,
+              line: {{width: 2, dash: "dot", color: "#666666"}}
+            }});
+            annotations.push({{
+              x: boundary,
+              y: 1.08,
+              xref: "x",
+              yref: "paper",
+              text: "gap between classes",
+              showarrow: false,
+              font: {{size: 11, color: "#666666"}}
+            }});
+          }} else {{
+            separationLine = `<strong>Raw distance overlap exists</strong>: overlap width = ${{formatDistance(-gap)}}.`;
+          }}
+        }}
+      }}
+
+      for (const item of classSummaries) {{
         traces.push({{
           type: "histogram",
-          x: distances,
-          name: `${{first.classDisplay}}: ${{first.className}}`,
+          x: item.distances,
+          name: `${{item.first.classDisplay}}: ${{item.first.className}}`,
           histnorm: "probability density",
-          opacity: label === activeClass ? 0.70 : 0.45,
+          opacity: 0.88,
           xbins: {{
             start: payload.distanceRange[0],
             end: payload.distanceRange[1],
             size: payload.distanceBinSize
           }},
-          hovertemplate: "distance bin=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
+          hovertemplate: "distance bin center=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
         }});
       }}
 
       const selectedSummary = summarizeDistances(graph.closestInnerOuterDistances);
-      const shapes = [];
-      const annotations = [];
       if (Number.isFinite(selectedSummary.mean)) {{
         shapes.push({{
           type: "line",
@@ -722,20 +764,21 @@ def write_ring_graph_viewer(
 
       distanceSummary.innerHTML = [
         `<strong>Selected graph nearest distances</strong>: n=${{selectedSummary.count}}, min=${{formatDistance(selectedSummary.min)}}, mean=${{formatDistance(selectedSummary.mean)}}, max=${{formatDistance(selectedSummary.max)}}`,
-        ...summaryLines
-      ].join("<br>");
+        ...summaryLines,
+        separationLine
+      ].filter((line) => line.length > 0).join("<br>");
 
       const layout = {{
-        title: {{text: "Class comparison: nearest outer node for each inner node", x: 0.02, xanchor: "left"}},
         xaxis: {{
           title: "closest distance from an inner node to any outer node",
           range: payload.distanceRange
         }},
         yaxis: {{title: "probability density", rangemode: "tozero"}},
-        barmode: "overlay",
-        bargap: 0.02,
-        margin: {{l: 56, r: 16, t: 62, b: 56}},
-        legend: {{orientation: "h", y: 1.17, x: 0.0}},
+        barmode: "group",
+        bargap: 0.08,
+        bargroupgap: 0.02,
+        margin: {{l: 56, r: 16, t: 72, b: 56}},
+        legend: {{orientation: "h", y: 1.18, x: 0.0}},
         shapes: shapes,
         annotations: annotations
       }};

@@ -7,19 +7,17 @@ tilted out of the xy plane while the inner ring remains planar.
 
 Default class definitions
 -------------------------
-label 0, "close":
-    the outer ring uses a smaller radial gap from the inner ring. Its closest
-    inner-to-outer distances are smaller.
+All samples use the same inner-radius range and the same outer-gap / outer-radius
+range. Labels are assigned only after geometry is generated: the graphs are sorted
+by their realized closest inner-to-outer distance statistic, then the lower half is
+label 0 ("close") and the upper half is label 1 ("far"). If the requested number
+of graphs is odd, the median-distance graph is dropped so the final dataset is
+balanced by rounding down.
 
-label 1, "far":
-    the outer ring uses a larger radial gap from the inner ring. Its closest
-    inner-to-outer distances are larger.
-
-Both classes use the same inner-radius range, the same global rotation range,
-the same outer-ring rotation range, and the same optional 3D outer-ring tilt
-range. The class label is encoded in the closest inner-to-outer node distance
-distribution, not in absolute orientation, label-specific angular phase, 3D tilt,
-node count, or atom/species type.
+The class label is therefore encoded by the closest-distance distribution that
+results from outer-ring rotation / optional 3D tilt, not by class-specific radii,
+absolute orientation, label-specific angular phase, node count, or atom/species
+type.
 
 The topology is undirected and, by default, contains center-to-inner and
 center-to-outer spoke edges. Ring-cycle edges can be enabled with flags if desired.
@@ -42,7 +40,7 @@ python generate_data/rotating_ring_dataset.py \
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import pi
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -70,7 +68,7 @@ class RingGraphEnvironment:
     name:
         Human-readable sample name.
     label:
-        Integer class label. 0 = close inner-to-outer distances, 1 = far inner-to-outer distances by default.
+        Integer class label. 0 = lower half of closest-distance statistic, 1 = upper half.
     Z:
         Node species/types with shape [n_nodes]. Defaults to all ones.
     R:
@@ -497,14 +495,12 @@ def create_rotating_ring_dataset(
     n_inner: int = 8,
     n_outer: int = 8,
     inner_radius_range: tuple[float, float] = (1.0, 1.0),
-    close_outer_gap_range: tuple[float, float] = (0.8, 0.8),
-    far_outer_gap_range: tuple[float, float] = (1.6, 1.6),
-    outer_gap_range: tuple[float, float] | None = None,
+    outer_gap_range: tuple[float, float] = (1.2, 1.2),
     outer_rotation_fraction_range: tuple[float, float] = (0.0, 0.45),
     outer_3d_rotation_range: tuple[float, float] = (0.0, 0.0),
     outer_3d_axis_angle: float = 0.0,
     global_rotation_fraction_range: tuple[float, float] = (0.0, 0.0),
-    class_phase_offset_fraction: float = 0.0,
+    distance_split_statistic: str = "mean",
     smooth_order: bool = True,
     shuffle: bool = False,
     add_inner_ring_edges: bool = False,
@@ -512,52 +508,48 @@ def create_rotating_ring_dataset(
     add_center_outer_edges: bool = False,
     dtype: torch.dtype | None = None,
 ) -> list[RingGraphEnvironment]:
-    """Generate a balanced two-class rotating-ring dataset.
+    """Generate a balanced two-class rotating-ring dataset by distance split.
 
-    `n_graphs=500` creates 250 examples of each class. If n_graphs is odd,
-    label 1 receives the extra graph.
+    Every generated graph uses the same `inner_radius_range` and the same
+    `outer_gap_range`. There are no class-specific outer gaps or radii.
 
-    By default, the dataset is not shuffled. It is ordered by class and then by
-    a smooth variation coordinate `t` from 0 to 1. Adjacent examples in a class
-    therefore differ only slightly in outer-ring rotation, while the class label
-    is encoded by the inner-to-outer gap. Set `smooth_order=False` for random
-    parameter sampling, and set `shuffle=True` only if you explicitly want
-    randomized storage order.
+    Labels are assigned after all candidate geometries are generated:
+        * sort graphs by a realized closest inner-to-outer distance statistic;
+        * assign the lower half to label 0 / "close";
+        * assign the upper half to label 1 / "far".
 
-    `close_outer_gap_range` controls the radial separation for label 0.
-    `far_outer_gap_range` controls the radial separation for label 1. The defaults
-    keep each class gap fixed, so the closest inner-to-outer distance distribution
-    separates the classes directly. The optional `outer_gap_range` argument is
-    kept for backward compatibility; when provided, it overrides both class-specific
-    gap ranges and makes both labels use the same gap distribution.
+    If `n_graphs` is odd, the middle graph in the sorted distance histogram is
+    discarded, so the returned dataset has `2 * floor(n_graphs / 2)` graphs.
+
+    `distance_split_statistic` can be "min", "mean", or "max" and selects which
+    per-graph closest-distance summary is used for sorting. The default "mean"
+    is usually the most stable way to split by the whole closest-distance
+    distribution while still producing one scalar per graph.
 
     `outer_rotation_fraction_range` is expressed as a fraction of one inner-ring
     sector. With the default n_inner=8, one sector is 45 degrees, so the outer
-    ring rotates from 0 to 20.25 degrees for both labels. This rotation is shared
-    across classes and is not the class-defining signal.
+    ring rotates from 0 to 20.25 degrees. The generated labels are not chosen
+    directly from this angle; angle only changes the realized closest distances,
+    and the sorted distance histogram determines the labels.
 
     `outer_3d_rotation_range` is in radians. Its default is (0, 0), so the
-    dataset is 2D exactly like the earlier version. Setting it to, for example,
-    (0, pi / 3) makes the outer ring smoothly tilt from planar to 60 degrees
-    while the inner ring remains in the xy plane.
-
-    `outer_3d_axis_angle` is the in-plane direction of the tilt axis in radians.
-    Its default is 0, which tilts around the +x axis.
-
-    `global_rotation_fraction_range` is also expressed as a fraction of one
-    inner-ring sector. Its default is (0, 0), so only the outer ring rotates
-    relative to the inner ring in the generated viewer. You can set it to, for
-    example, (0, 8) to make the whole graph smoothly sweep through 360 degrees.
+    dataset is 2D. Setting it to, for example, (0, pi / 3) makes the outer ring
+    smoothly tilt from planar to 60 degrees while the inner ring remains in the
+    xy plane.
     """
 
-    if n_graphs <= 0:
-        raise ValueError(f"n_graphs must be positive, got {n_graphs}.")
+    if n_graphs <= 1:
+        raise ValueError(f"n_graphs must be at least 2 for a balanced split, got {n_graphs}.")
     if n_inner <= 0 or n_outer <= 0:
         raise ValueError(f"n_inner and n_outer must be positive, got {n_inner}, {n_outer}.")
+    if distance_split_statistic not in {"min", "mean", "max"}:
+        raise ValueError(
+            "distance_split_statistic must be one of {'min', 'mean', 'max'}, "
+            f"got {distance_split_statistic!r}."
+        )
 
     dtype = _as_dtype(dtype)
     generator = torch.Generator().manual_seed(int(seed))
-    counts = [n_graphs // 2, n_graphs - (n_graphs // 2)]
     inner_step = 2.0 * pi / float(n_inner)
 
     def fraction_for_index(index: int, count: int) -> float:
@@ -569,16 +561,9 @@ def create_rotating_ring_dataset(
             raise ValueError(f"Expected range high >= low, got {value_range}.")
         return float(low + (high - low) * t)
 
-    if outer_gap_range is not None:
-        # Backward compatibility for old callers that supplied one shared gap
-        # range. New default behavior uses class-specific gap ranges below.
-        close_outer_gap_range = outer_gap_range
-        far_outer_gap_range = outer_gap_range
-
     for range_name, value_range in (
         ("inner_radius_range", inner_radius_range),
-        ("close_outer_gap_range", close_outer_gap_range),
-        ("far_outer_gap_range", far_outer_gap_range),
+        ("outer_gap_range", outer_gap_range),
         ("outer_rotation_fraction_range", outer_rotation_fraction_range),
         ("outer_3d_rotation_range", outer_3d_rotation_range),
         ("global_rotation_fraction_range", global_rotation_fraction_range),
@@ -587,70 +572,105 @@ def create_rotating_ring_dataset(
         if high < low:
             raise ValueError(f"Expected {range_name} high >= low, got {value_range}.")
 
-    outer_gap_ranges_by_label = [close_outer_gap_range, far_outer_gap_range]
+    candidates: list[RingGraphEnvironment] = []
+    for candidate_index in range(n_graphs):
+        variation_t = fraction_for_index(candidate_index, n_graphs)
 
-    environments: list[RingGraphEnvironment] = []
-    running_index = 0
-    for label, count in enumerate(counts):
-        for class_index in range(count):
-            variation_t = fraction_for_index(class_index, count)
+        if smooth_order:
+            inner_radius = lerp(inner_radius_range, variation_t)
+            outer_gap = lerp(outer_gap_range, variation_t)
+            outer_rotation_fraction = lerp(outer_rotation_fraction_range, variation_t)
+            outer_3d_rotation = lerp(outer_3d_rotation_range, variation_t)
+            global_rotation_fraction = lerp(global_rotation_fraction_range, variation_t)
+        else:
+            inner_radius = _uniform(generator, *inner_radius_range)
+            outer_gap = _uniform(generator, *outer_gap_range)
+            outer_rotation_fraction = _uniform(generator, *outer_rotation_fraction_range)
+            outer_3d_rotation = _uniform(generator, *outer_3d_rotation_range)
+            global_rotation_fraction = _uniform(generator, *global_rotation_fraction_range)
 
-            if smooth_order:
-                inner_radius = lerp(inner_radius_range, variation_t)
-                outer_gap = lerp(outer_gap_ranges_by_label[label], variation_t)
-                outer_rotation_fraction = lerp(outer_rotation_fraction_range, variation_t)
-                outer_3d_rotation = lerp(outer_3d_rotation_range, variation_t)
-                global_rotation_fraction = lerp(global_rotation_fraction_range, variation_t)
-            else:
-                inner_radius = _uniform(generator, *inner_radius_range)
-                outer_gap = _uniform(generator, *outer_gap_ranges_by_label[label])
-                outer_rotation_fraction = _uniform(generator, *outer_rotation_fraction_range)
-                outer_3d_rotation = _uniform(generator, *outer_3d_rotation_range)
-                global_rotation_fraction = _uniform(generator, *global_rotation_fraction_range)
+        outer_radius = inner_radius + outer_gap
+        outer_rotation_clockwise = outer_rotation_fraction * inner_step
+        global_rotation = global_rotation_fraction * inner_step
 
-            outer_radius = inner_radius + outer_gap
-            outer_rotation_clockwise = outer_rotation_fraction * inner_step
-            global_rotation = global_rotation_fraction * inner_step
+        env = create_ring_graph_environment(
+            label=0,
+            inner_radius=inner_radius,
+            outer_radius=outer_radius,
+            outer_rotation_clockwise=outer_rotation_clockwise,
+            outer_3d_rotation=outer_3d_rotation,
+            outer_3d_axis_angle=outer_3d_axis_angle,
+            global_rotation=global_rotation,
+            n_inner=n_inner,
+            n_outer=n_outer,
+            class_phase_offset_fraction=0.0,
+            name=f"rotating_ring_unlabeled_{candidate_index:04d}",
+            add_inner_ring_edges=add_inner_ring_edges,
+            add_outer_ring_edges=add_outer_ring_edges,
+            add_center_outer_edges=add_center_outer_edges,
+            dtype=dtype,
+            metadata={
+                "seed": int(seed),
+                "candidate_index": int(candidate_index),
+                "generation_index": int(candidate_index),
+                "variation_t": float(variation_t),
+                "smooth_order": bool(smooth_order),
+                "outer_rotation_fraction": float(outer_rotation_fraction),
+                "outer_3d_rotation_range": tuple(float(x) for x in outer_3d_rotation_range),
+                "outer_3d_rotation_deg_range": tuple(float(x) * 180.0 / pi for x in outer_3d_rotation_range),
+                "outer_3d_axis_angle": float(outer_3d_axis_angle),
+                "outer_3d_axis_deg": float(outer_3d_axis_angle * 180.0 / pi),
+                "global_rotation_fraction": float(global_rotation_fraction),
+                "class_distance_mode": "distance_histogram_split",
+                "distance_split_statistic": distance_split_statistic,
+                "inner_radius_range": tuple(float(x) for x in inner_radius_range),
+                "outer_gap_range": tuple(float(x) for x in outer_gap_range),
+                "outer_rotation_fraction_range": tuple(float(x) for x in outer_rotation_fraction_range),
+                "global_rotation_fraction_range": tuple(float(x) for x in global_rotation_fraction_range),
+            },
+        )
+        candidates.append(env)
 
-            env = create_ring_graph_environment(
-                label=label,
-                inner_radius=inner_radius,
-                outer_radius=outer_radius,
-                outer_rotation_clockwise=outer_rotation_clockwise,
-                outer_3d_rotation=outer_3d_rotation,
-                outer_3d_axis_angle=outer_3d_axis_angle,
-                global_rotation=global_rotation,
-                n_inner=n_inner,
-                n_outer=n_outer,
-                class_phase_offset_fraction=class_phase_offset_fraction,
-                name=f"rotating_ring_{RING_GRAPH_CLASS_NAMES[label]}_{class_index:04d}",
-                add_inner_ring_edges=add_inner_ring_edges,
-                add_outer_ring_edges=add_outer_ring_edges,
-                add_center_outer_edges=add_center_outer_edges,
-                dtype=dtype,
-                metadata={
-                    "seed": int(seed),
+    statistic_key = f"closest_inner_outer_distance_{distance_split_statistic}"
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda env: (float(env.metadata[statistic_key]), int(env.metadata["candidate_index"])),
+    )
+
+    per_class_count = n_graphs // 2
+    close_candidates = sorted_candidates[:per_class_count]
+    far_candidates = sorted_candidates[-per_class_count:]
+    kept_by_candidate_index = {int(env.metadata["candidate_index"]): env for env in close_candidates + far_candidates}
+    split_threshold_low = float(close_candidates[-1].metadata[statistic_key])
+    split_threshold_high = float(far_candidates[0].metadata[statistic_key])
+
+    relabeled_by_candidate_index: dict[int, RingGraphEnvironment] = {}
+    for label, class_candidates in enumerate((close_candidates, far_candidates)):
+        for class_index, env in enumerate(class_candidates):
+            candidate_index = int(env.metadata["candidate_index"])
+            metadata = dict(env.metadata)
+            metadata.update(
+                {
+                    "class_name": RING_GRAPH_CLASS_NAMES[label],
                     "class_index": int(class_index),
-                    "generation_index": int(running_index),
-                    "variation_t": float(variation_t),
-                    "smooth_order": bool(smooth_order),
-                    "outer_rotation_fraction": float(outer_rotation_fraction),
-                    "outer_3d_rotation_range": tuple(float(x) for x in outer_3d_rotation_range),
-                    "outer_3d_rotation_deg_range": tuple(float(x) * 180.0 / pi for x in outer_3d_rotation_range),
-                    "outer_3d_axis_angle": float(outer_3d_axis_angle),
-                    "outer_3d_axis_deg": float(outer_3d_axis_angle * 180.0 / pi),
-                    "global_rotation_fraction": float(global_rotation_fraction),
-                    "class_distance_mode": "outer_gap",
-                    "inner_radius_range": tuple(float(x) for x in inner_radius_range),
-                    "close_outer_gap_range": tuple(float(x) for x in close_outer_gap_range),
-                    "far_outer_gap_range": tuple(float(x) for x in far_outer_gap_range),
-                    "active_outer_gap_range": tuple(float(x) for x in outer_gap_ranges_by_label[label]),
-                    "outer_rotation_fraction_range": tuple(float(x) for x in outer_rotation_fraction_range),
-                    "global_rotation_fraction_range": tuple(float(x) for x in global_rotation_fraction_range),
-                },
+                    "balanced_class_count": int(per_class_count),
+                    "requested_n_graphs": int(n_graphs),
+                    "returned_n_graphs": int(2 * per_class_count),
+                    "dropped_for_balance": int(n_graphs - 2 * per_class_count),
+                    "distance_split_rank": int(sorted_candidates.index(env)),
+                    "distance_split_threshold_low": split_threshold_low,
+                    "distance_split_threshold_high": split_threshold_high,
+                    "active_outer_gap_range": tuple(float(x) for x in outer_gap_range),
+                }
             )
-            environments.append(env)
-            running_index += 1
+            relabeled_by_candidate_index[candidate_index] = replace(
+                env,
+                label=label,
+                name=f"rotating_ring_{RING_GRAPH_CLASS_NAMES[label]}_{class_index:04d}",
+                metadata=metadata,
+            )
+
+    environments = [relabeled_by_candidate_index[i] for i in sorted(kept_by_candidate_index)]
 
     if shuffle:
         order = torch.randperm(len(environments), generator=generator).tolist()
@@ -776,20 +796,17 @@ def as_pyg_data_list(environments: list[RingGraphEnvironment]) -> list[Any]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a rotating-ring HTML viewer.")
-    parser.add_argument("--n-graphs", type=int, default=100, help="Total number of graphs across both classes.")
+    parser.add_argument("--n-graphs", type=int, default=500, help="Total number of graphs across both classes.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
-    parser.add_argument("--n-inner", type=int, default=4, help="Number of inner-ring nodes.")
-    parser.add_argument("--n-outer", type=int, default=4, help="Number of outer-ring nodes. Kept constant across samples.")
+    parser.add_argument("--n-inner", type=int, default=8, help="Number of inner-ring nodes.")
+    parser.add_argument("--n-outer", type=int, default=8, help="Number of outer-ring nodes. Kept constant across samples.")
     parser.add_argument("--html", type=Path, default=DEFAULT_VISUALIZATION_DIR / "rotating_ring_viewer.html", help="Output HTML viewer path.")
     parser.add_argument("--viewer-max-graphs", type=int, default=500, help="Max graphs included in the HTML slider.")
     parser.add_argument("--inner-radius-min", type=float, default=1.0)
     parser.add_argument("--inner-radius-max", type=float, default=1.0)
-    parser.add_argument("--close-outer-gap-min", type=float, default=0.8, help="Outer gap for label 0 / close class.")
-    parser.add_argument("--close-outer-gap-max", type=float, default=0.8, help="Outer gap for label 0 / close class.")
-    parser.add_argument("--far-outer-gap-min", type=float, default=1.6, help="Outer gap for label 1 / far class.")
-    parser.add_argument("--far-outer-gap-max", type=float, default=1.6, help="Outer gap for label 1 / far class.")
-    parser.add_argument("--outer-gap-min", type=float, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--outer-gap-max", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--outer-gap-min", type=float, default=1.2, help="Shared outer gap for both labels.")
+    parser.add_argument("--outer-gap-max", type=float, default=1.2, help="Shared outer gap for both labels.")
+    parser.add_argument("--distance-split-statistic", choices=("min", "mean", "max"), default="mean", help="Closest-distance summary used to split the histogram into balanced labels.")
     parser.add_argument("--outer-rotation-frac-min", type=float, default=0.0)
     parser.add_argument("--outer-rotation-frac-max", type=float, default=0.45)
     parser.add_argument(
@@ -812,7 +829,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--global-rotation-frac-min", type=float, default=0.0)
     parser.add_argument("--global-rotation-frac-max", type=float, default=0.0)
-    parser.add_argument("--class-phase-offset-frac", type=float, default=0.0, help="Optional legacy label-1 angular offset as a fraction of one inner-ring sector. Keep 0.0 for distance-defined classes.")
     parser.add_argument(
         "--random-parameters",
         action="store_true",
@@ -832,24 +848,13 @@ def main() -> None:
         if args.outer_3d_rotation_deg is not None
         else args.outer_3d_rotation_deg_max
     )
-    close_outer_gap_range = (args.close_outer_gap_min, args.close_outer_gap_max)
-    far_outer_gap_range = (args.far_outer_gap_min, args.far_outer_gap_max)
-    if args.outer_gap_min is not None or args.outer_gap_max is not None:
-        # Legacy CLI behavior: using the hidden old flags makes both classes use
-        # the same outer-gap range, just like the previous version of this file.
-        legacy_min = args.outer_gap_min if args.outer_gap_min is not None else args.close_outer_gap_min
-        legacy_max = args.outer_gap_max if args.outer_gap_max is not None else args.close_outer_gap_max
-        close_outer_gap_range = (legacy_min, legacy_max)
-        far_outer_gap_range = (legacy_min, legacy_max)
-
     envs = create_rotating_ring_dataset(
         n_graphs=args.n_graphs,
         seed=args.seed,
         n_inner=args.n_inner,
         n_outer=args.n_outer,
         inner_radius_range=(args.inner_radius_min, args.inner_radius_max),
-        close_outer_gap_range=close_outer_gap_range,
-        far_outer_gap_range=far_outer_gap_range,
+        outer_gap_range=(args.outer_gap_min, args.outer_gap_max),
         outer_rotation_fraction_range=(args.outer_rotation_frac_min, args.outer_rotation_frac_max),
         outer_3d_rotation_range=(
             args.outer_3d_rotation_deg_min * pi / 180.0,
@@ -857,7 +862,7 @@ def main() -> None:
         ),
         outer_3d_axis_angle=args.outer_3d_axis_deg * pi / 180.0,
         global_rotation_fraction_range=(args.global_rotation_frac_min, args.global_rotation_frac_max),
-        class_phase_offset_fraction=args.class_phase_offset_frac,
+        distance_split_statistic=args.distance_split_statistic,
         smooth_order=not args.random_parameters,
         shuffle=args.shuffle,
         add_inner_ring_edges=args.add_inner_ring_edges,
