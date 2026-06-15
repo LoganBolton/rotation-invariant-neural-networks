@@ -30,8 +30,8 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-v6"
-VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-v6"
+VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-distance-v7"
+VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-distance-v7"
 
 
 # -----------------------------------------------------------------------------
@@ -112,6 +112,41 @@ def _viewer_title(env: RingGraphEnvironment, index: int, total: int) -> str:
     )
 
 
+def _closest_inner_outer_distances(env: RingGraphEnvironment) -> list[float]:
+    """Return the nearest outer-ring distance for each inner-ring node.
+
+    This measures the geometric byproduct of the angular class construction:
+    for every inner-ring node, compute its Euclidean distance to every outer-ring
+    node, then keep only the closest one. The returned list therefore has one
+    value per inner node.
+    """
+
+    inner_mask = env.node_role == INNER_ROLE
+    outer_mask = env.node_role == OUTER_ROLE
+    inner_points = env.R[inner_mask]
+    outer_points = env.R[outer_mask]
+    if inner_points.numel() == 0 or outer_points.numel() == 0:
+        return []
+
+    distances = torch.cdist(inner_points, outer_points, p=2.0)
+    closest = distances.min(dim=1).values
+    return [float(value) for value in closest.tolist()]
+
+
+def _summary_from_values(values: list[float]) -> dict[str, float]:
+    """Return min/mean/max summary values for a list of distances."""
+
+    clean = [float(value) for value in values if value == value]
+    if not clean:
+        nan = float("nan")
+        return {"min": nan, "mean": nan, "max": nan}
+    return {
+        "min": min(clean),
+        "mean": sum(clean) / float(len(clean)),
+        "max": max(clean),
+    }
+
+
 def _validate_generated_viewer_html(html: str) -> None:
     """Fail fast if this file ever emits the older single-slider viewer."""
 
@@ -122,6 +157,10 @@ def _validate_generated_viewer_html(html: str) -> None:
         'setActiveClass',
         'The slider is ordered by the smooth variation coordinate inside the selected class',
         'outer3DRotationDeg',
+        'closestInnerOuterDistances',
+        'id="distance-histogram"',
+        'updateDistanceHistogram',
+        'distanceRange',
         'getCurrentCamera',
         'rememberCurrentCamera',
         'scene.camera',
@@ -269,6 +308,8 @@ def write_ring_graph_viewer(
             outer_3d_rotation = float(meta.get("outer_3d_rotation", 0.0))
             outer_3d_axis_angle = float(meta.get("outer_3d_axis_angle", 0.0))
             global_rotation = float(meta.get("global_rotation", float("nan")))
+            closest_inner_outer_distances = _closest_inner_outer_distances(env)
+            closest_inner_outer_summary = _summary_from_values(closest_inner_outer_distances)
             title = (
                 f"{class_display} ({class_name}) | variation {100.0 * variation_t:.1f}% | "
                 f"graph {class_position + 1}/{class_total}<br>"
@@ -297,6 +338,10 @@ def write_ring_graph_viewer(
                     "outer3DRotationDeg": outer_3d_rotation * deg,
                     "outer3DAxisDeg": outer_3d_axis_angle * deg,
                     "globalRotationDeg": global_rotation * deg,
+                    "closestInnerOuterDistances": closest_inner_outer_distances,
+                    "closestInnerOuterDistanceMin": closest_inner_outer_summary["min"],
+                    "closestInnerOuterDistanceMean": closest_inner_outer_summary["mean"],
+                    "closestInnerOuterDistanceMax": closest_inner_outer_summary["max"],
                     "nodeX": node_x,
                     "nodeY": node_y,
                     "nodeZ": node_z,
@@ -308,11 +353,38 @@ def write_ring_graph_viewer(
                 }
             )
 
+    all_closest_distances = [
+        distance
+        for record in records
+        for distance in record["closestInnerOuterDistances"]
+        if distance == distance
+    ]
+    if all_closest_distances:
+        min_distance = min(all_closest_distances)
+        max_distance = max(all_closest_distances)
+        if max_distance > min_distance:
+            distance_padding = 0.05 * (max_distance - min_distance)
+        else:
+            distance_padding = max(1.0e-6, 0.05 * abs(max_distance))
+        distance_range = [
+            max(0.0, min_distance - distance_padding),
+            max_distance + distance_padding,
+        ]
+    else:
+        distance_range = [0.0, 1.0]
+    distance_bin_count = 32
+    distance_bin_size = max(
+        1.0e-9,
+        (distance_range[1] - distance_range[0]) / float(distance_bin_count),
+    )
+
     payload = {
         "viewerVersion": VIEWER_VERSION,
         "graphs": records,
         "axisRange": axis_range,
         "zRange": z_range,
+        "distanceRange": distance_range,
+        "distanceBinSize": distance_bin_size,
         "viewerTemplateVersion": VIEWER_TEMPLATE_VERSION,
     }
     payload_json = json.dumps(payload, allow_nan=True)
@@ -389,10 +461,64 @@ def write_ring_graph_viewer(
       font-size: 13px;
       color: #555555;
     }}
-    #plot {{
-      width: 100vw;
+    #viewer-body {{
+      display: grid;
+      grid-template-columns: minmax(520px, 2fr) minmax(360px, 1fr);
+      gap: 12px;
+      padding: 12px;
+      box-sizing: border-box;
       height: calc(100vh - 118px);
       min-height: 560px;
+    }}
+    #plot {{
+      width: 100%;
+      height: 100%;
+      min-height: 560px;
+      background: white;
+      border: 1px solid #e1e1e1;
+      border-radius: 10px;
+      overflow: hidden;
+    }}
+    #distance-panel {{
+      background: white;
+      border: 1px solid #e1e1e1;
+      border-radius: 10px;
+      padding: 12px;
+      min-width: 0;
+      overflow: hidden;
+    }}
+    #distance-panel h2 {{
+      margin: 0 0 6px 0;
+      font-size: 16px;
+    }}
+    #distance-summary {{
+      font-size: 12px;
+      color: #444444;
+      line-height: 1.45;
+      margin-bottom: 8px;
+    }}
+    #distance-histogram {{
+      width: 100%;
+      height: 430px;
+      min-height: 360px;
+    }}
+    .distance-note {{
+      font-size: 12px;
+      color: #666666;
+      line-height: 1.4;
+      margin-top: 8px;
+    }}
+    @media (max-width: 1100px) {{
+      #viewer-body {{
+        grid-template-columns: 1fr;
+        height: auto;
+      }}
+      #plot {{
+        height: 560px;
+      }}
+      #distance-histogram {{
+        height: 360px;
+      }}
     }}
     .hint {{
       font-size: 12px;
@@ -415,7 +541,15 @@ def write_ring_graph_viewer(
     <div id="details"></div>
     <div class="hint">The slider is ordered by the smooth variation coordinate inside the selected class, so adjacent positions should show small geometry changes. Rotating or zooming the 3D view is preserved while the slider/class changes. Set outer 3D rotation to 0 for the original planar dataset, or a positive value to tilt only the outer ring. Viewer template: {VIEWER_VERSION}.</div>
   </div>
-  <div id="plot"></div>
+  <div id="viewer-body">
+    <div id="plot"></div>
+    <section id="distance-panel" aria-label="Closest inner-to-outer distance histogram">
+      <h2>Closest inner-to-outer distances</h2>
+      <div id="distance-summary"></div>
+      <div id="distance-histogram"></div>
+      <div class="distance-note">Each histogram pools the nearest outer-ring distance for every inner-ring node across the graphs included for that class in this viewer. This makes the angular class separation visible as a distance distribution.</div>
+    </section>
+  </div>
 
   <script type="text/javascript">
     const payload = {payload_json};
@@ -436,6 +570,8 @@ def write_ring_graph_viewer(
     let storedCamera = null;
 
     const plotDiv = document.getElementById("plot");
+    const histogramDiv = document.getElementById("distance-histogram");
+    const distanceSummary = document.getElementById("distance-summary");
     const slider = document.getElementById("graph-slider");
     const status = document.getElementById("status");
     const details = document.getElementById("details");
@@ -490,6 +626,120 @@ def write_ring_graph_viewer(
       const graphs = currentClassGraphs();
       const maxIndex = Math.max(graphs.length - 1, 1);
       return Number(slider.value) / maxIndex;
+    }}
+
+
+    function finiteNumberArray(values) {{
+      if (!Array.isArray(values)) return [];
+      return values.map(Number).filter((value) => Number.isFinite(value));
+    }}
+
+    function formatDistance(value) {{
+      return Number.isFinite(value) ? value.toFixed(4) : "n/a";
+    }}
+
+    function summarizeDistances(values) {{
+      const clean = finiteNumberArray(values);
+      if (clean.length === 0) {{
+        return {{count: 0, min: NaN, mean: NaN, max: NaN}};
+      }}
+      let minValue = clean[0];
+      let maxValue = clean[0];
+      let total = 0.0;
+      for (const value of clean) {{
+        if (value < minValue) minValue = value;
+        if (value > maxValue) maxValue = value;
+        total += value;
+      }}
+      return {{
+        count: clean.length,
+        min: minValue,
+        mean: total / clean.length,
+        max: maxValue
+      }};
+    }}
+
+    function distancesForClass(label) {{
+      const graphs = graphsByClass[String(label)] || [];
+      const distances = [];
+      for (const graph of graphs) {{
+        distances.push(...finiteNumberArray(graph.closestInnerOuterDistances));
+      }}
+      return distances;
+    }}
+
+    function updateDistanceHistogram(graph) {{
+      const traces = [];
+      const summaryLines = [];
+      for (const label of classLabels) {{
+        const graphs = graphsByClass[label] || [];
+        if (graphs.length === 0) continue;
+        const first = graphs[0];
+        const distances = distancesForClass(label);
+        const classSummary = summarizeDistances(distances);
+        summaryLines.push(
+          `${{first.classDisplay}} (${{first.className}}): n=${{classSummary.count}}, min=${{formatDistance(classSummary.min)}}, mean=${{formatDistance(classSummary.mean)}}, max=${{formatDistance(classSummary.max)}}`
+        );
+        traces.push({{
+          type: "histogram",
+          x: distances,
+          name: `${{first.classDisplay}}: ${{first.className}}`,
+          histnorm: "probability density",
+          opacity: label === activeClass ? 0.70 : 0.45,
+          xbins: {{
+            start: payload.distanceRange[0],
+            end: payload.distanceRange[1],
+            size: payload.distanceBinSize
+          }},
+          hovertemplate: "distance bin=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
+        }});
+      }}
+
+      const selectedSummary = summarizeDistances(graph.closestInnerOuterDistances);
+      const shapes = [];
+      const annotations = [];
+      if (Number.isFinite(selectedSummary.mean)) {{
+        shapes.push({{
+          type: "line",
+          xref: "x",
+          yref: "paper",
+          x0: selectedSummary.mean,
+          x1: selectedSummary.mean,
+          y0: 0,
+          y1: 1,
+          line: {{width: 3, dash: "dash", color: "#202020"}}
+        }});
+        annotations.push({{
+          x: selectedSummary.mean,
+          y: 1.02,
+          xref: "x",
+          yref: "paper",
+          text: "selected mean",
+          showarrow: false,
+          font: {{size: 11, color: "#202020"}}
+        }});
+      }}
+
+      distanceSummary.innerHTML = [
+        `<strong>Selected graph nearest distances</strong>: n=${{selectedSummary.count}}, min=${{formatDistance(selectedSummary.min)}}, mean=${{formatDistance(selectedSummary.mean)}}, max=${{formatDistance(selectedSummary.max)}}`,
+        ...summaryLines
+      ].join("<br>");
+
+      const layout = {{
+        title: {{text: "Class comparison: nearest outer node for each inner node", x: 0.02, xanchor: "left"}},
+        xaxis: {{
+          title: "closest distance from an inner node to any outer node",
+          range: payload.distanceRange
+        }},
+        yaxis: {{title: "probability density", rangemode: "tozero"}},
+        barmode: "overlay",
+        bargap: 0.02,
+        margin: {{l: 56, r: 16, t: 62, b: 56}},
+        legend: {{orientation: "h", y: 1.17, x: 0.0}},
+        shapes: shapes,
+        annotations: annotations
+      }};
+      Plotly.react(histogramDiv, traces, layout, config);
     }}
 
     function makeTraces(graph) {{
@@ -596,7 +846,8 @@ def write_ring_graph_viewer(
         }}
       }});
       status.textContent = `${{graph.classDisplay}} graph ${{index + 1}}/${{graphs.length}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
-      details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg`;
+      details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg | closest inner-outer mean ${{formatDistance(graph.closestInnerOuterDistanceMean)}}`;
+      updateDistanceHistogram(graph);
       refreshClassButtons();
     }}
 
