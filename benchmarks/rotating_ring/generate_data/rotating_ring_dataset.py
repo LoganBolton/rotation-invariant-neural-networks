@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field, replace
-from math import pi
+from math import gcd, pi
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -57,6 +57,24 @@ CENTER_ROLE = 0
 INNER_ROLE = 1
 OUTER_ROLE = 2
 PADDING_ROLE = -1
+
+
+def relative_ring_rotation_period(n_inner: int, n_outer: int) -> float:
+    """Return the smallest relative in-plane rotation that changes neither ring set.
+
+    The closest-distance distribution between two evenly spaced rings is periodic
+    under both the inner-ring and outer-ring rotational symmetries.  This helper
+    returns the fundamental relative phase period, 2*pi/lcm(n_inner, n_outer).
+
+    For equal rings this is exactly one node sector, preserving the historical
+    behavior.  For mixed rings, for example 3 inner and 4 outer nodes, the period
+    is 30 degrees rather than the 120-degree inner sector.
+    """
+
+    if n_inner <= 0 or n_outer <= 0:
+        raise ValueError(f"n_inner and n_outer must be positive, got {n_inner}, {n_outer}.")
+    lcm = abs(int(n_inner) * int(n_outer)) // gcd(int(n_inner), int(n_outer))
+    return 2.0 * pi / float(lcm)
 
 
 @dataclass(frozen=True)
@@ -526,11 +544,13 @@ def create_rotating_ring_dataset(
     is usually the most stable way to split by the whole closest-distance
     distribution while still producing one scalar per graph.
 
-    `outer_rotation_fraction_range` is expressed as a fraction of one inner-ring
-    sector. With the default n_inner=8, one sector is 45 degrees, so the outer
-    ring rotates from 0 to 20.25 degrees. The generated labels are not chosen
-    directly from this angle; angle only changes the realized closest distances,
-    and the sorted distance histogram determines the labels.
+    `outer_rotation_fraction_range` is expressed as a fraction of the fundamental
+    relative phase period between the inner and outer rings: 2*pi/lcm(n_inner,
+    n_outer). For equal-count rings this is the historical one-ring-sector
+    behavior. For mixed-count rings it avoids sweeping through repeated equivalent
+    configurations. The generated labels are not chosen directly from this angle;
+    angle only changes the realized closest distances, and the sorted distance
+    histogram determines the labels.
 
     `outer_3d_rotation_range` is in radians. Its default is (0, 0), so the
     dataset is 2D. Setting it to, for example, (0, pi / 3) makes the outer ring
@@ -551,6 +571,7 @@ def create_rotating_ring_dataset(
     dtype = _as_dtype(dtype)
     generator = torch.Generator().manual_seed(int(seed))
     inner_step = 2.0 * pi / float(n_inner)
+    relative_rotation_period = relative_ring_rotation_period(n_inner, n_outer)
 
     def fraction_for_index(index: int, count: int) -> float:
         return 0.0 if count <= 1 else float(index) / float(count - 1)
@@ -590,7 +611,7 @@ def create_rotating_ring_dataset(
             global_rotation_fraction = _uniform(generator, *global_rotation_fraction_range)
 
         outer_radius = inner_radius + outer_gap
-        outer_rotation_clockwise = outer_rotation_fraction * inner_step
+        outer_rotation_clockwise = outer_rotation_fraction * relative_rotation_period
         global_rotation = global_rotation_fraction * inner_step
 
         env = create_ring_graph_environment(
@@ -616,6 +637,9 @@ def create_rotating_ring_dataset(
                 "variation_t": float(variation_t),
                 "smooth_order": bool(smooth_order),
                 "outer_rotation_fraction": float(outer_rotation_fraction),
+                "outer_rotation_fraction_basis": "relative_phase_period",
+                "relative_rotation_period": float(relative_rotation_period),
+                "relative_rotation_period_deg": float(relative_rotation_period * 180.0 / pi),
                 "outer_3d_rotation_range": tuple(float(x) for x in outer_3d_rotation_range),
                 "outer_3d_rotation_deg_range": tuple(float(x) * 180.0 / pi for x in outer_3d_rotation_range),
                 "outer_3d_axis_angle": float(outer_3d_axis_angle),

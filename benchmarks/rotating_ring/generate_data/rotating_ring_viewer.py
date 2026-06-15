@@ -227,7 +227,12 @@ def write_ring_graph_viewer(
     def sort_value(item: tuple[int, RingGraphEnvironment]) -> tuple[float, int]:
         original_index, env = item
         meta = dict(env.metadata)
-        for key in ("variation_t", "class_index", "generation_index"):
+        # Prefer the measured distance ordering when available.  The smooth
+        # rotation parameter is monotonic for equal-count rings, but mixed-count
+        # rings can have repeated/equivalent angular configurations unless the
+        # generator uses the relative-period basis.  Sorting by class_index keeps
+        # the viewer aligned with the actual close/far split for both cases.
+        for key in ("class_index", "distance_split_rank", "variation_t", "generation_index"):
             if key in meta:
                 try:
                     return float(meta[key]), int(original_index)
