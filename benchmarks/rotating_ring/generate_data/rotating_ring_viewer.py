@@ -30,8 +30,8 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-distance-v9"
-VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-distance-v9"
+VIEWER_TEMPLATE_VERSION = "single-slider-smooth-outer3d-camera-distance-v10"
+VIEWER_VERSION = "single-slider-smooth-outer3d-camera-distance-v10"
 
 
 # -----------------------------------------------------------------------------
@@ -174,14 +174,14 @@ def _summary_from_values(values: list[float]) -> dict[str, float]:
 
 
 def _validate_generated_viewer_html(html: str) -> None:
-    """Fail fast if this file ever emits the older single-slider viewer."""
+    """Fail fast if this file ever emits the older class-button viewer."""
 
     required_markers = [
         VIEWER_VERSION,
-        'id="class-buttons"',
-        'graphsByClass',
-        'setActiveClass',
-        'The slider is ordered by the smooth variation coordinate inside the selected class',
+        'id="graph-slider"',
+        'allGraphs',
+        'class-boundary',
+        'The single slider walks through all selected graphs',
         'outer3DRotationDeg',
         'closestInnerOuterDistances',
         'id="distance-histogram"',
@@ -198,7 +198,7 @@ def _validate_generated_viewer_html(html: str) -> None:
     missing = [marker for marker in required_markers if marker not in html]
     if missing:
         raise RuntimeError(
-            "Generated HTML is missing the updated class-filtered viewer markers: "
+            "Generated HTML is missing the updated single-slider viewer markers: "
             + ", ".join(missing)
         )
 
@@ -210,13 +210,12 @@ def write_ring_graph_viewer(
     max_graphs: int | None = 500,
     include_plotlyjs: bool | str = True,
 ) -> None:
-    """Write an interactive 3D Plotly viewer with class filtering.
+    """Write an interactive 3D Plotly viewer with one continuous slider.
 
-    The viewer keeps the classes separate. The class buttons switch between
-    Class 1 (label 0) and Class 2 (label 1), and the slider then walks only
-    through the selected class. Within each class, graphs are sorted by
-    `metadata["variation_t"]` when available, so neighboring slider positions
-    correspond to neighboring points along the same smooth parameter path.
+    Graphs are still selected evenly from each class and sorted by class, then
+    by `metadata["variation_t"]` within each class. The HTML viewer exposes one
+    slider over that combined order; when the slider crosses from one label to
+    the next, the status/header text changes to show the active class.
     """
 
     if not environments:
@@ -515,6 +514,12 @@ def write_ring_graph_viewer(
       font-size: 14px;
       font-weight: 600;
     }}
+    #class-boundary {{
+      font-size: 14px;
+    }}
+    .current-class-boundary {{
+      font-weight: 700;
+    }}
     #details {{
       font-size: 13px;
       color: #555555;
@@ -606,7 +611,7 @@ def write_ring_graph_viewer(
 <body>
   <div id="controls">
     <div class="control-row">
-      <span id="class-buttons"></span>
+      <span id="class-boundary"></span>
       <button id="prev-button" type="button">Previous</button>
       <button id="next-button" type="button">Next</button>
       <button id="play-button" type="button">Play</button>
@@ -616,7 +621,7 @@ def write_ring_graph_viewer(
       <span id="status"></span>
     </div>
     <div id="details"></div>
-    <div class="hint">The slider is ordered by the smooth variation coordinate inside the selected class, so adjacent positions should show small geometry changes. Rotating or zooming the 3D view is preserved while the slider/class changes. Set outer 3D rotation to 0 for the original planar dataset, or a positive value to tilt only the outer ring. Viewer template: {VIEWER_VERSION}.</div>
+    <div class="hint">The single slider walks through all selected graphs: class 0 first, then class 1. When the slider crosses the class boundary, the status/header changes to show the active class. Rotating or zooming the 3D view is preserved while the slider changes. Viewer template: {VIEWER_VERSION}.</div>
   </div>
   <div id="viewer-body">
     <div id="plot"></div>
@@ -644,7 +649,11 @@ def write_ring_graph_viewer(
     }}
 
     const classLabels = Object.keys(graphsByClass).sort((a, b) => Number(a) - Number(b));
-    let activeClass = classLabels[0];
+    const allGraphs = [];
+    for (const label of classLabels) {{
+      allGraphs.push(...graphsByClass[label]);
+    }}
+    let activeClass = allGraphs.length > 0 ? String(allGraphs[0].label) : (classLabels[0] || "0");
     let playTimer = null;
     let storedCamera = null;
 
@@ -655,7 +664,7 @@ def write_ring_graph_viewer(
     const slider = document.getElementById("graph-slider");
     const status = document.getElementById("status");
     const details = document.getElementById("details");
-    const classButtons = document.getElementById("class-buttons");
+    const classBoundary = document.getElementById("class-boundary");
     const playButton = document.getElementById("play-button");
 
     const config = {{responsive: true, displaylogo: false}};
@@ -702,14 +711,38 @@ def write_ring_graph_viewer(
       }});
     }}
 
-    function currentClassGraphs() {{
-      return graphsByClass[activeClass] || [];
+    function currentSliderFraction() {{
+      const maxIndex = Math.max(allGraphs.length - 1, 1);
+      return Number(slider.value) / maxIndex;
     }}
 
-    function currentSliderFraction() {{
-      const graphs = currentClassGraphs();
-      const maxIndex = Math.max(graphs.length - 1, 1);
-      return Number(slider.value) / maxIndex;
+    function escapeHtml(value) {{
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }}
+
+    function updateClassBoundaryText(graph, index) {{
+      const boundaryPieces = [];
+      let offset = 0;
+      for (const label of classLabels) {{
+        const graphs = graphsByClass[label] || [];
+        if (graphs.length === 0) continue;
+        const first = graphs[0];
+        const start = offset + 1;
+        const end = offset + graphs.length;
+        const labelText = `${{first.classDisplay}}: ${{first.className}} ${{start}}-${{end}}`;
+        if (String(graph.label) === String(label)) {{
+          boundaryPieces.push(`<span class="current-class-boundary">${{escapeHtml(labelText)}} current</span>`);
+        }} else {{
+          boundaryPieces.push(escapeHtml(labelText));
+        }}
+        offset += graphs.length;
+      }}
+      classBoundary.innerHTML = boundaryPieces.join(" | ");
     }}
 
 
@@ -1006,42 +1039,18 @@ def write_ring_graph_viewer(
       return layout;
     }}
 
-    function refreshClassButtons() {{
-      classButtons.innerHTML = "";
-      for (const label of classLabels) {{
-        const graphs = graphsByClass[label];
-        if (!graphs || graphs.length === 0) continue;
-        const first = graphs[0];
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = `${{first.classDisplay}}: ${{first.className}} (${{graphs.length}})`;
-        button.className = label === activeClass ? "active" : "";
-        button.addEventListener("click", () => setActiveClass(label));
-        classButtons.appendChild(button);
-      }}
-    }}
-
-    function setActiveClass(label) {{
-      activeClass = String(label);
-      const graphs = currentClassGraphs();
-      const maxIndex = Math.max(graphs.length - 1, 0);
-      slider.max = String(maxIndex);
-      // When switching classes, always restart at the beginning of the selected class.
-      slider.value = "0";
-      updatePlot();
-    }}
 
     function updatePlot() {{
-      const graphs = currentClassGraphs();
-      if (graphs.length === 0) return;
-      const maxIndex = Math.max(graphs.length - 1, 0);
+      if (allGraphs.length === 0) return;
+      const maxIndex = Math.max(allGraphs.length - 1, 0);
       slider.max = String(maxIndex);
       let index = Number(slider.value);
       if (!Number.isFinite(index)) index = 0;
       index = Math.max(0, Math.min(maxIndex, Math.round(index)));
       slider.value = String(index);
 
-      const graph = graphs[index];
+      const graph = allGraphs[index];
+      activeClass = String(graph.label);
       const camera = storedCamera ? cloneObject(storedCamera) : getCurrentCamera();
       Plotly.react(plotDiv, makeTraces(graph), makeLayout(graph, camera), config).then(() => {{
         attachCameraListener();
@@ -1056,11 +1065,11 @@ def write_ring_graph_viewer(
           }});
         }}
       }});
-      status.textContent = `${{graph.classDisplay}} graph ${{index + 1}}/${{graphs.length}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
+      status.textContent = `${{graph.classDisplay}}: ${{graph.className}} | graph ${{index + 1}}/${{allGraphs.length}} | class graph ${{graph.classGraphIndex + 1}}/${{graph.classGraphCount}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
       details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg | closest inner-outer mean ${{formatDistance(graph.closestInnerOuterDistanceMean)}}`;
+      updateClassBoundaryText(graph, index);
       updateDistanceHistogram(graph);
       updateDistanceAngleScatter(graph);
-      refreshClassButtons();
     }}
 
     function stopPlay() {{
@@ -1078,8 +1087,7 @@ def write_ring_graph_viewer(
       }}
       playButton.textContent = "Pause";
       playTimer = window.setInterval(() => {{
-        const graphs = currentClassGraphs();
-        const maxIndex = Math.max(graphs.length - 1, 0);
+        const maxIndex = Math.max(allGraphs.length - 1, 0);
         const next = Number(slider.value) + 1;
         if (next > maxIndex) {{
           stopPlay();
@@ -1118,7 +1126,7 @@ def write_ring_graph_viewer(
       }}
     }});
 
-    refreshClassButtons();
+    slider.max = String(Math.max(allGraphs.length - 1, 0));
     updatePlot();
   </script>
 </body>

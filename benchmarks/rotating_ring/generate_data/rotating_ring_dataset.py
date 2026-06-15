@@ -496,7 +496,7 @@ def create_rotating_ring_dataset(
     n_outer: int = 8,
     inner_radius_range: tuple[float, float] = (1.0, 1.0),
     outer_gap_range: tuple[float, float] = (1.2, 1.2),
-    outer_rotation_fraction_range: tuple[float, float] = (0.0, 0.45),
+    outer_rotation_fraction_range: tuple[float, float] = (0.0, 0.5),
     outer_3d_rotation_range: tuple[float, float] = (0.0, 0.0),
     outer_3d_axis_angle: float = 0.0,
     global_rotation_fraction_range: tuple[float, float] = (0.0, 0.0),
@@ -808,7 +808,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--outer-gap-max", type=float, default=1.2, help="Shared outer gap for both labels.")
     parser.add_argument("--distance-split-statistic", choices=("min", "mean", "max"), default="mean", help="Closest-distance summary used to split the histogram into balanced labels.")
     parser.add_argument("--outer-rotation-frac-min", type=float, default=0.0)
-    parser.add_argument("--outer-rotation-frac-max", type=float, default=0.45)
+    parser.add_argument("--outer-rotation-frac-max", type=float, default=0.50)
     parser.add_argument(
         "--outer-3d-rotation-deg",
         type=float,
