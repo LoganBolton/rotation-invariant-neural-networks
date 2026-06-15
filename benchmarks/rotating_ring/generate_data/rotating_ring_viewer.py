@@ -30,8 +30,8 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "single-slider-smooth-outer3d-camera-distance-v10"
-VIEWER_VERSION = "single-slider-smooth-outer3d-camera-distance-v10"
+VIEWER_TEMPLATE_VERSION = "single-slider-smooth-outer3d-camera-distance-v11"
+VIEWER_VERSION = "single-slider-smooth-outer3d-camera-distance-v11"
 
 
 # -----------------------------------------------------------------------------
@@ -173,6 +173,15 @@ def _summary_from_values(values: list[float]) -> dict[str, float]:
     }
 
 
+def _finite_float_or_nan(value: Any) -> float:
+    """Return value as float, or NaN when it cannot be converted."""
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def _validate_generated_viewer_html(html: str) -> None:
     """Fail fast if this file ever emits the older class-button viewer."""
 
@@ -187,6 +196,7 @@ def _validate_generated_viewer_html(html: str) -> None:
         'id="distance-histogram"',
         'updateDistanceHistogram',
         'distanceRange',
+        'meanDistanceRange',
         'closestInnerOuterAngleDeg',
         'id="distance-angle-scatter"',
         'updateDistanceAngleScatter',
@@ -194,6 +204,9 @@ def _validate_generated_viewer_html(html: str) -> None:
         'rememberCurrentCamera',
         'scene.camera',
         'uirevision',
+        'distanceSplitCutoff',
+        'selected graph average',
+        'class cutoff',
     ]
     missing = [marker for marker in required_markers if marker not in html]
     if missing:
@@ -213,9 +226,15 @@ def write_ring_graph_viewer(
     """Write an interactive 3D Plotly viewer with one continuous slider.
 
     Graphs are still selected evenly from each class and sorted by class, then
-    by `metadata["variation_t"]` within each class. The HTML viewer exposes one
+    by the distance split order when available. The HTML viewer exposes one
     slider over that combined order; when the slider crosses from one label to
     the next, the status/header text changes to show the active class.
+
+    The top histogram shows one value per graph: the average nearest
+    inner-to-outer distance. The dotted vertical line is the class cutoff from
+    the split thresholds. The dashed vertical line is the currently selected
+    graph average. The bottom angle-vs-distance scatter keeps the raw per-inner
+    nearest-node diagnostics.
     """
 
     if not environments:
@@ -227,11 +246,10 @@ def write_ring_graph_viewer(
     def sort_value(item: tuple[int, RingGraphEnvironment]) -> tuple[float, int]:
         original_index, env = item
         meta = dict(env.metadata)
-        # Prefer the measured distance ordering when available.  The smooth
-        # rotation parameter is monotonic for equal-count rings, but mixed-count
-        # rings can have repeated/equivalent angular configurations unless the
-        # generator uses the relative-period basis.  Sorting by class_index keeps
-        # the viewer aligned with the actual close/far split for both cases.
+
+        # Prefer the split order/class order because labels are assigned from the
+        # measured closest-distance statistic. This matters for mixed-count rings,
+        # where the rotation parameter is not always monotonic in distance.
         for key in ("class_index", "distance_split_rank", "variation_t", "generation_index"):
             if key in meta:
                 try:
@@ -270,8 +288,6 @@ def write_ring_graph_viewer(
         for _, env in selected_items
     )
     axis_range = [-1.15 * max_radius, 1.15 * max_radius]
-    # Use the same range for z so tilted outer-ring nodes are always visible
-    # and the sphere interpretation is not visually compressed.
     z_range = list(axis_range)
 
     role_to_color = {
@@ -287,6 +303,7 @@ def write_ring_graph_viewer(
 
     records: list[dict[str, Any]] = []
     deg = 180.0 / pi
+
     for label in labels:
         group = selected_by_label[label]
         class_total = len(group)
@@ -341,12 +358,31 @@ def write_ring_graph_viewer(
             outer_3d_rotation = float(meta.get("outer_3d_rotation", 0.0))
             outer_3d_axis_angle = float(meta.get("outer_3d_axis_angle", 0.0))
             global_rotation = float(meta.get("global_rotation", float("nan")))
+
             (
                 closest_inner_outer_distances,
                 closest_inner_outer_angle_deg,
             ) = _closest_inner_outer_distance_angle_pairs(env)
+
             closest_inner_outer_summary = _summary_from_values(closest_inner_outer_distances)
             closest_inner_outer_angle_summary = _summary_from_values(closest_inner_outer_angle_deg)
+
+            distance_split_threshold_low = _finite_float_or_nan(
+                meta.get("distance_split_threshold_low", float("nan"))
+            )
+            distance_split_threshold_high = _finite_float_or_nan(
+                meta.get("distance_split_threshold_high", float("nan"))
+            )
+            if (
+                distance_split_threshold_low == distance_split_threshold_low
+                and distance_split_threshold_high == distance_split_threshold_high
+            ):
+                distance_split_cutoff = 0.5 * (
+                    distance_split_threshold_low + distance_split_threshold_high
+                )
+            else:
+                distance_split_cutoff = float("nan")
+
             title = (
                 f"{class_display} ({class_name}) | variation {100.0 * variation_t:.1f}% | "
                 f"graph {class_position + 1}/{class_total}<br>"
@@ -380,6 +416,9 @@ def write_ring_graph_viewer(
                     "closestInnerOuterDistanceMin": closest_inner_outer_summary["min"],
                     "closestInnerOuterDistanceMean": closest_inner_outer_summary["mean"],
                     "closestInnerOuterDistanceMax": closest_inner_outer_summary["max"],
+                    "distanceSplitThresholdLow": distance_split_threshold_low,
+                    "distanceSplitThresholdHigh": distance_split_threshold_high,
+                    "distanceSplitCutoff": distance_split_cutoff,
                     "closestInnerOuterAngleMinDeg": closest_inner_outer_angle_summary["min"],
                     "closestInnerOuterAngleMeanDeg": closest_inner_outer_angle_summary["mean"],
                     "closestInnerOuterAngleMaxDeg": closest_inner_outer_angle_summary["max"],
@@ -394,6 +433,8 @@ def write_ring_graph_viewer(
                 }
             )
 
+    # This range is for the bottom angle-vs-distance scatter, which still shows
+    # raw nearest distances for each inner node.
     all_closest_distances = [
         distance
         for record in records
@@ -406,17 +447,46 @@ def write_ring_graph_viewer(
         if max_distance > min_distance:
             distance_padding = 0.05 * (max_distance - min_distance)
         else:
-            distance_padding = max(1.0e-6, 0.05 * abs(max_distance))
+            distance_padding = max(1.0e-6, 0.05 * abs(max_distance), 0.05)
         distance_range = [
-            max(0.0, min_distance - distance_padding),
+            min_distance - distance_padding,
             max_distance + distance_padding,
         ]
     else:
         distance_range = [0.0, 1.0]
+
+    # This range is for the top histogram. It shows graph-average distances,
+    # plus the cutoff marker. It should not be forced to start at zero.
+    all_mean_distances = [
+        float(record["closestInnerOuterDistanceMean"])
+        for record in records
+        if float(record["closestInnerOuterDistanceMean"]) == float(record["closestInnerOuterDistanceMean"])
+    ]
+    all_cutoff_values = [
+        float(record["distanceSplitCutoff"])
+        for record in records
+        if float(record["distanceSplitCutoff"]) == float(record["distanceSplitCutoff"])
+    ]
+    histogram_x_values = all_mean_distances + all_cutoff_values
+
+    if histogram_x_values:
+        min_hist_value = min(histogram_x_values)
+        max_hist_value = max(histogram_x_values)
+        if max_hist_value > min_hist_value:
+            histogram_padding = 0.10 * (max_hist_value - min_hist_value)
+        else:
+            histogram_padding = max(1.0e-6, 0.05 * abs(max_hist_value), 0.05)
+        mean_distance_range = [
+            min_hist_value - histogram_padding,
+            max_hist_value + histogram_padding,
+        ]
+    else:
+        mean_distance_range = [0.0, 1.0]
+
     distance_bin_count = 80
     distance_bin_size = max(
         1.0e-9,
-        (distance_range[1] - distance_range[0]) / float(distance_bin_count),
+        (mean_distance_range[1] - mean_distance_range[0]) / float(distance_bin_count),
     )
 
     all_closest_angle_deg = [
@@ -431,7 +501,7 @@ def write_ring_graph_viewer(
         if max_angle > min_angle:
             angle_padding = 0.05 * (max_angle - min_angle)
         else:
-            angle_padding = max(1.0e-6, 0.05 * abs(max_angle))
+            angle_padding = max(1.0e-6, 0.05 * abs(max_angle), 0.05)
         angle_range = [
             max(0.0, min_angle - angle_padding),
             max_angle + angle_padding,
@@ -445,6 +515,7 @@ def write_ring_graph_viewer(
         "axisRange": axis_range,
         "zRange": z_range,
         "distanceRange": distance_range,
+        "meanDistanceRange": mean_distance_range,
         "distanceBinSize": distance_bin_size,
         "angleRangeDeg": angle_range,
         "viewerTemplateVersion": VIEWER_TEMPLATE_VERSION,
@@ -630,13 +701,13 @@ def write_ring_graph_viewer(
   </div>
   <div id="viewer-body">
     <div id="plot"></div>
-    <section id="distance-panel" aria-label="Closest inner-to-outer distance histogram">
-      <h2>Closest inner-to-outer distances</h2>
+    <section id="distance-panel" aria-label="Closest inner-to-outer distance diagnostics">
+      <h2>Average closest inner-to-outer distance</h2>
       <div id="distance-summary"></div>
       <div id="distance-histogram"></div>
       <h2 class="scatter-heading">Angle gap vs closest distance</h2>
       <div id="distance-angle-scatter"></div>
-      <div class="distance-note">The histogram pools the nearest outer-ring distance for every inner-ring node across the graphs included for that class. The scatter plot below it shows the same nearest-node pairs as angle gap vs distance, so you can see the nonlinear angle-to-distance mapping directly. Bars are histogram bins, not exact individual distances; the summary above reports whether the raw distances overlap.</div>
+      <div class="distance-note">The histogram shows one value per graph: the average nearest outer-ring distance across inner-ring nodes. The dotted vertical line is the class cutoff. The dashed vertical line is the selected graph average. The scatter plot below is unchanged: it shows the raw nearest-node pairs as angle gap vs distance.</div>
     </section>
   </div>
 
@@ -650,7 +721,11 @@ def write_ring_graph_viewer(
       graphsByClass[key].push(graph);
     }}
     for (const key of Object.keys(graphsByClass)) {{
-      graphsByClass[key].sort((a, b) => a.variationT - b.variationT);
+      graphsByClass[key].sort((a, b) => {{
+        const aIndex = Number.isFinite(Number(a.classGraphIndex)) ? Number(a.classGraphIndex) : Number(a.variationT);
+        const bIndex = Number.isFinite(Number(b.classGraphIndex)) ? Number(b.classGraphIndex) : Number(b.variationT);
+        return aIndex - bIndex;
+      }});
     }}
 
     const classLabels = Object.keys(graphsByClass).sort((a, b) => Number(a) - Number(b));
@@ -750,10 +825,14 @@ def write_ring_graph_viewer(
       classBoundary.innerHTML = boundaryPieces.join(" | ");
     }}
 
-
     function finiteNumberArray(values) {{
       if (!Array.isArray(values)) return [];
       return values.map(Number).filter((value) => Number.isFinite(value));
+    }}
+
+    function finiteNumber(value) {{
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : NaN;
     }}
 
     function formatDistance(value) {{
@@ -781,123 +860,155 @@ def write_ring_graph_viewer(
       }};
     }}
 
-    function distancesForClass(label) {{
+    function meanDistancesForClass(label) {{
       const graphs = graphsByClass[String(label)] || [];
-      const distances = [];
+      const values = [];
       for (const graph of graphs) {{
-        distances.push(...finiteNumberArray(graph.closestInnerOuterDistances));
+        const value = finiteNumber(graph.closestInnerOuterDistanceMean);
+        if (Number.isFinite(value)) values.push(value);
       }}
-      return distances;
+      return values;
+    }}
+
+    function cutoffForGraph(graph) {{
+      const directCutoff = finiteNumber(graph.distanceSplitCutoff);
+      if (Number.isFinite(directCutoff)) return directCutoff;
+
+      const low = finiteNumber(graph.distanceSplitThresholdLow);
+      const high = finiteNumber(graph.distanceSplitThresholdHigh);
+      if (Number.isFinite(low) && Number.isFinite(high)) {{
+        return 0.5 * (low + high);
+      }}
+
+      return NaN;
+    }}
+
+    function cutoffForAllGraphs() {{
+      const cutoffs = [];
+      for (const graph of allGraphs) {{
+        const cutoff = cutoffForGraph(graph);
+        if (Number.isFinite(cutoff)) cutoffs.push(cutoff);
+      }}
+      if (cutoffs.length === 0) return NaN;
+
+      const first = cutoffs[0];
+      for (const cutoff of cutoffs) {{
+        if (Math.abs(cutoff - first) > 1.0e-9) {{
+          // If multiple cutoffs somehow appear, use the mean. This keeps a
+          // visible cutoff while avoiding arbitrary first-value behavior.
+          let total = 0.0;
+          for (const value of cutoffs) total += value;
+          return total / cutoffs.length;
+        }}
+      }}
+      return first;
     }}
 
     function updateDistanceHistogram(graph) {{
       const traces = [];
       const summaryLines = [];
       const classSummaries = [];
+      const cutoff = cutoffForAllGraphs();
 
       for (const label of classLabels) {{
         const graphs = graphsByClass[label] || [];
         if (graphs.length === 0) continue;
         const first = graphs[0];
-        const distances = distancesForClass(label);
-        const classSummary = summarizeDistances(distances);
-        classSummaries.push({{label: label, first: first, distances: distances, summary: classSummary}});
+        const meanDistances = meanDistancesForClass(label);
+        const classSummary = summarizeDistances(meanDistances);
+        classSummaries.push({{label: label, first: first, distances: meanDistances, summary: classSummary}});
         summaryLines.push(
-          `${{first.classDisplay}} (${{first.className}}): n=${{classSummary.count}}, min=${{formatDistance(classSummary.min)}}, mean=${{formatDistance(classSummary.mean)}}, max=${{formatDistance(classSummary.max)}}`
+          `${{first.classDisplay}} (${{first.className}}): graphs=${{classSummary.count}}, min avg=${{formatDistance(classSummary.min)}}, mean avg=${{formatDistance(classSummary.mean)}}, max avg=${{formatDistance(classSummary.max)}}`
         );
       }}
 
-      let separationLine = "";
       const shapes = [];
       const annotations = [];
-      if (classSummaries.length === 2) {{
-        const a = classSummaries[0];
-        const b = classSummaries[1];
-        const left = a.summary.mean <= b.summary.mean ? a : b;
-        const right = a.summary.mean <= b.summary.mean ? b : a;
-        if (Number.isFinite(left.summary.max) && Number.isFinite(right.summary.min)) {{
-          const gap = right.summary.min - left.summary.max;
-          if (gap > 0) {{
-            const boundary = 0.5 * (left.summary.max + right.summary.min);
-            separationLine = `<strong>No raw distance overlap</strong>: max ${{left.first.classDisplay}} = ${{formatDistance(left.summary.max)}}, min ${{right.first.classDisplay}} = ${{formatDistance(right.summary.min)}}, gap = ${{formatDistance(gap)}}.`;
-            shapes.push({{
-              type: "line",
-              xref: "x",
-              yref: "paper",
-              x0: boundary,
-              x1: boundary,
-              y0: 0,
-              y1: 1,
-              line: {{width: 2, dash: "dot", color: "#666666"}}
-            }});
-            annotations.push({{
-              x: boundary,
-              y: 1.08,
-              xref: "x",
-              yref: "paper",
-              text: "gap between classes",
-              showarrow: false,
-              font: {{size: 11, color: "#666666"}}
-            }});
-          }} else {{
-            separationLine = `<strong>Raw distance overlap exists</strong>: overlap width = ${{formatDistance(-gap)}}.`;
-          }}
-        }}
+
+      if (Number.isFinite(cutoff)) {{
+        shapes.push({{
+          type: "line",
+          xref: "x",
+          yref: "paper",
+          x0: cutoff,
+          x1: cutoff,
+          y0: 0,
+          y1: 1,
+          line: {{width: 2, dash: "dot", color: "#666666"}}
+        }});
+        annotations.push({{
+          x: cutoff,
+          y: 1.08,
+          xref: "x",
+          yref: "paper",
+          text: "class cutoff",
+          showarrow: false,
+          font: {{size: 11, color: "#666666"}}
+        }});
       }}
 
-      for (const item of classSummaries) {{
+      const selectedAverage = finiteNumber(graph.closestInnerOuterDistanceMean);
+      if (Number.isFinite(selectedAverage)) {{
+        shapes.push({{
+          type: "line",
+          xref: "x",
+          yref: "paper",
+          x0: selectedAverage,
+          x1: selectedAverage,
+          y0: 0,
+          y1: 1,
+          line: {{width: 3, dash: "dash", color: "#202020"}}
+        }});
+        annotations.push({{
+          x: selectedAverage,
+          y: 1.02,
+          xref: "x",
+          yref: "paper",
+          text: "selected graph average",
+          showarrow: false,
+          font: {{size: 11, color: "#202020"}}
+        }});
+      }}
+
+      for (let classIndex = 0; classIndex < classSummaries.length; classIndex += 1) {{
+        const item = classSummaries[classIndex];
         traces.push({{
           type: "histogram",
           x: item.distances,
           name: `${{item.first.classDisplay}}: ${{item.first.className}}`,
           histnorm: "probability density",
           opacity: 0.88,
-          marker: {{color: colorForClassIndex(classSummaries.indexOf(item)), line: {{color: "#202020", width: 1}}}},
+          marker: {{color: colorForClassIndex(classIndex), line: {{color: "#202020", width: 1}}}},
           xbins: {{
-            start: payload.distanceRange[0],
-            end: payload.distanceRange[1],
+            start: payload.meanDistanceRange[0],
+            end: payload.meanDistanceRange[1],
             size: payload.distanceBinSize
           }},
-          hovertemplate: "distance bin center=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
+          hovertemplate: "graph average distance=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
         }});
       }}
 
-      const selectedSummary = summarizeDistances(graph.closestInnerOuterDistances);
-      if (Number.isFinite(selectedSummary.mean)) {{
-        shapes.push({{
-          type: "line",
-          xref: "x",
-          yref: "paper",
-          x0: selectedSummary.mean,
-          x1: selectedSummary.mean,
-          y0: 0,
-          y1: 1,
-          line: {{width: 3, dash: "dash", color: "#202020"}}
-        }});
-        annotations.push({{
-          x: selectedSummary.mean,
-          y: 1.02,
-          xref: "x",
-          yref: "paper",
-          text: "selected mean",
-          showarrow: false,
-          font: {{size: 11, color: "#202020"}}
-        }});
-      }}
+      const selectedRawSummary = summarizeDistances(graph.closestInnerOuterDistances);
+      const cutoffLine = Number.isFinite(cutoff)
+        ? `<strong>Class cutoff</strong>: average distance = ${{formatDistance(cutoff)}}`
+        : `<strong>Class cutoff</strong>: n/a`;
+      const selectedLine = `<strong>Selected graph average</strong>: ${{formatDistance(selectedAverage)}}`;
+      const rawLine = `<strong>Selected raw nearest distances</strong>: n=${{selectedRawSummary.count}}, min=${{formatDistance(selectedRawSummary.min)}}, mean=${{formatDistance(selectedRawSummary.mean)}}, max=${{formatDistance(selectedRawSummary.max)}}`;
 
       distanceSummary.innerHTML = [
-        `<strong>Selected graph nearest distances</strong>: n=${{selectedSummary.count}}, min=${{formatDistance(selectedSummary.min)}}, mean=${{formatDistance(selectedSummary.mean)}}, max=${{formatDistance(selectedSummary.max)}}`,
-        ...summaryLines,
-        separationLine
+        selectedLine,
+        cutoffLine,
+        rawLine,
+        ...summaryLines
       ].filter((line) => line.length > 0).join("<br>");
 
       const layout = {{
         xaxis: {{
-          title: "closest distance from an inner node to any outer node",
-          range: payload.distanceRange
+          title: "average closest distance from inner nodes to outer ring",
+          range: payload.meanDistanceRange
         }},
         yaxis: {{title: "probability density", rangemode: "tozero"}},
-        barmode: "group",
+        barmode: "overlay",
         bargap: 0.08,
         bargroupgap: 0.02,
         margin: {{l: 56, r: 16, t: 72, b: 56}},
@@ -1033,7 +1144,6 @@ def write_ring_graph_viewer(
           aspectmode: "cube",
           uirevision: "keep-camera"
         }},
-        // Keep user-driven scene state, especially the 3D camera, across Plotly.react calls.
         uirevision: "keep-camera",
         margin: {{l: 0, r: 0, t: 78, b: 0}},
         showlegend: false
@@ -1043,7 +1153,6 @@ def write_ring_graph_viewer(
       }}
       return layout;
     }}
-
 
     function updatePlot() {{
       if (allGraphs.length === 0) return;
@@ -1117,7 +1226,6 @@ def write_ring_graph_viewer(
     }});
     playButton.addEventListener("click", togglePlay);
 
-
     window.addEventListener("keydown", (event) => {{
       if (event.key === "ArrowLeft") {{
         stopPlay();
@@ -1140,4 +1248,3 @@ def write_ring_graph_viewer(
 
     _validate_generated_viewer_html(html)
     html_path.write_text(html, encoding="utf-8")
-
