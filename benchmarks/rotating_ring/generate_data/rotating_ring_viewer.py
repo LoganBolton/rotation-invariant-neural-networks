@@ -30,8 +30,8 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-distance-v8"
-VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-distance-v8"
+VIEWER_TEMPLATE_VERSION = "class-filtered-smooth-outer3d-camera-distance-v9"
+VIEWER_VERSION = "class-filtered-smooth-slider-outer3d-camera-distance-v9"
 
 
 # -----------------------------------------------------------------------------
@@ -112,13 +112,23 @@ def _viewer_title(env: RingGraphEnvironment, index: int, total: int) -> str:
     )
 
 
-def _closest_inner_outer_distances(env: RingGraphEnvironment) -> list[float]:
-    """Return the nearest outer-ring distance for each inner-ring node.
+def _wrapped_angle_difference_degrees(angle_a: torch.Tensor, angle_b: torch.Tensor) -> torch.Tensor:
+    """Return the absolute wrapped angular difference in degrees.
 
-    This measures the geometric byproduct of the angular class construction:
-    for every inner-ring node, compute its Euclidean distance to every outer-ring
-    node, then keep only the closest one. The returned list therefore has one
-    value per inner node.
+    The result is in [0, 180]. This is used as a viewer diagnostic: it reports
+    the xy-plane angular gap between each inner node and its nearest outer node.
+    """
+
+    diff = torch.atan2(torch.sin(angle_a - angle_b), torch.cos(angle_a - angle_b)).abs()
+    return diff * (180.0 / pi)
+
+
+def _closest_inner_outer_distance_angle_pairs(env: RingGraphEnvironment) -> tuple[list[float], list[float]]:
+    """Return nearest outer distance and xy-angle gap for each inner node.
+
+    For every inner-ring node, this computes the nearest outer-ring node by full
+    3D Euclidean distance. It then reports both the closest distance and the
+    absolute wrapped xy-plane angular gap to that same nearest outer node.
     """
 
     inner_mask = env.node_role == INNER_ROLE
@@ -126,11 +136,27 @@ def _closest_inner_outer_distances(env: RingGraphEnvironment) -> list[float]:
     inner_points = env.R[inner_mask]
     outer_points = env.R[outer_mask]
     if inner_points.numel() == 0 or outer_points.numel() == 0:
-        return []
+        return [], []
 
     distances = torch.cdist(inner_points, outer_points, p=2.0)
-    closest = distances.min(dim=1).values
-    return [float(value) for value in closest.tolist()]
+    closest_values, closest_outer_indices = distances.min(dim=1)
+
+    inner_angles = torch.atan2(inner_points[:, 1], inner_points[:, 0])
+    nearest_outer_points = outer_points[closest_outer_indices]
+    nearest_outer_angles = torch.atan2(nearest_outer_points[:, 1], nearest_outer_points[:, 0])
+    angle_gaps_deg = _wrapped_angle_difference_degrees(inner_angles, nearest_outer_angles)
+
+    return (
+        [float(value) for value in closest_values.tolist()],
+        [float(value) for value in angle_gaps_deg.tolist()],
+    )
+
+
+def _closest_inner_outer_distances(env: RingGraphEnvironment) -> list[float]:
+    """Return the nearest outer-ring distance for each inner-ring node."""
+
+    distances, _ = _closest_inner_outer_distance_angle_pairs(env)
+    return distances
 
 
 def _summary_from_values(values: list[float]) -> dict[str, float]:
@@ -161,6 +187,9 @@ def _validate_generated_viewer_html(html: str) -> None:
         'id="distance-histogram"',
         'updateDistanceHistogram',
         'distanceRange',
+        'closestInnerOuterAngleDeg',
+        'id="distance-angle-scatter"',
+        'updateDistanceAngleScatter',
         'getCurrentCamera',
         'rememberCurrentCamera',
         'scene.camera',
@@ -308,8 +337,12 @@ def write_ring_graph_viewer(
             outer_3d_rotation = float(meta.get("outer_3d_rotation", 0.0))
             outer_3d_axis_angle = float(meta.get("outer_3d_axis_angle", 0.0))
             global_rotation = float(meta.get("global_rotation", float("nan")))
-            closest_inner_outer_distances = _closest_inner_outer_distances(env)
+            (
+                closest_inner_outer_distances,
+                closest_inner_outer_angle_deg,
+            ) = _closest_inner_outer_distance_angle_pairs(env)
             closest_inner_outer_summary = _summary_from_values(closest_inner_outer_distances)
+            closest_inner_outer_angle_summary = _summary_from_values(closest_inner_outer_angle_deg)
             title = (
                 f"{class_display} ({class_name}) | variation {100.0 * variation_t:.1f}% | "
                 f"graph {class_position + 1}/{class_total}<br>"
@@ -339,9 +372,13 @@ def write_ring_graph_viewer(
                     "outer3DAxisDeg": outer_3d_axis_angle * deg,
                     "globalRotationDeg": global_rotation * deg,
                     "closestInnerOuterDistances": closest_inner_outer_distances,
+                    "closestInnerOuterAngleDeg": closest_inner_outer_angle_deg,
                     "closestInnerOuterDistanceMin": closest_inner_outer_summary["min"],
                     "closestInnerOuterDistanceMean": closest_inner_outer_summary["mean"],
                     "closestInnerOuterDistanceMax": closest_inner_outer_summary["max"],
+                    "closestInnerOuterAngleMinDeg": closest_inner_outer_angle_summary["min"],
+                    "closestInnerOuterAngleMeanDeg": closest_inner_outer_angle_summary["mean"],
+                    "closestInnerOuterAngleMaxDeg": closest_inner_outer_angle_summary["max"],
                     "nodeX": node_x,
                     "nodeY": node_y,
                     "nodeZ": node_z,
@@ -378,6 +415,26 @@ def write_ring_graph_viewer(
         (distance_range[1] - distance_range[0]) / float(distance_bin_count),
     )
 
+    all_closest_angle_deg = [
+        angle
+        for record in records
+        for angle in record["closestInnerOuterAngleDeg"]
+        if angle == angle
+    ]
+    if all_closest_angle_deg:
+        min_angle = min(all_closest_angle_deg)
+        max_angle = max(all_closest_angle_deg)
+        if max_angle > min_angle:
+            angle_padding = 0.05 * (max_angle - min_angle)
+        else:
+            angle_padding = max(1.0e-6, 0.05 * abs(max_angle))
+        angle_range = [
+            max(0.0, min_angle - angle_padding),
+            max_angle + angle_padding,
+        ]
+    else:
+        angle_range = [0.0, 1.0]
+
     payload = {
         "viewerVersion": VIEWER_VERSION,
         "graphs": records,
@@ -385,6 +442,7 @@ def write_ring_graph_viewer(
         "zRange": z_range,
         "distanceRange": distance_range,
         "distanceBinSize": distance_bin_size,
+        "angleRangeDeg": angle_range,
         "viewerTemplateVersion": VIEWER_TEMPLATE_VERSION,
     }
     payload_json = json.dumps(payload, allow_nan=True)
@@ -485,11 +543,16 @@ def write_ring_graph_viewer(
       border-radius: 10px;
       padding: 12px;
       min-width: 0;
-      overflow: hidden;
+      overflow-y: auto;
+      overflow-x: hidden;
     }}
     #distance-panel h2 {{
       margin: 0 0 6px 0;
       font-size: 16px;
+    }}
+    .scatter-heading {{
+      margin-top: 18px !important;
+      padding-top: 6px;
     }}
     #distance-summary {{
       font-size: 12px;
@@ -499,8 +562,16 @@ def write_ring_graph_viewer(
     }}
     #distance-histogram {{
       width: 100%;
-      height: 430px;
-      min-height: 360px;
+      height: 260px;
+      min-height: 240px;
+    }}
+    #distance-angle-scatter {{
+      width: 100%;
+      height: 300px;
+      min-height: 280px;
+      margin-top: 22px;
+      border-top: 1px solid #eeeeee;
+      padding-top: 10px;
     }}
     .distance-note {{
       font-size: 12px;
@@ -516,8 +587,14 @@ def write_ring_graph_viewer(
       #plot {{
         height: 560px;
       }}
+      #distance-panel {{
+        overflow: visible;
+      }}
       #distance-histogram {{
-        height: 360px;
+        height: 260px;
+      }}
+      #distance-angle-scatter {{
+        height: 320px;
       }}
     }}
     .hint {{
@@ -547,7 +624,9 @@ def write_ring_graph_viewer(
       <h2>Closest inner-to-outer distances</h2>
       <div id="distance-summary"></div>
       <div id="distance-histogram"></div>
-      <div class="distance-note">Each histogram pools the nearest outer-ring distance for every inner-ring node across the graphs included for that class in this viewer. Bars are histogram bins, not exact individual distances; the summary above reports whether the raw distances overlap.</div>
+      <h2 class="scatter-heading">Angle gap vs closest distance</h2>
+      <div id="distance-angle-scatter"></div>
+      <div class="distance-note">The histogram pools the nearest outer-ring distance for every inner-ring node across the graphs included for that class. The scatter plot below it shows the same nearest-node pairs as angle gap vs distance, so you can see the nonlinear angle-to-distance mapping directly. Bars are histogram bins, not exact individual distances; the summary above reports whether the raw distances overlap.</div>
     </section>
   </div>
 
@@ -571,6 +650,7 @@ def write_ring_graph_viewer(
 
     const plotDiv = document.getElementById("plot");
     const histogramDiv = document.getElementById("distance-histogram");
+    const angleDistanceDiv = document.getElementById("distance-angle-scatter");
     const distanceSummary = document.getElementById("distance-summary");
     const slider = document.getElementById("graph-slider");
     const status = document.getElementById("status");
@@ -579,6 +659,10 @@ def write_ring_graph_viewer(
     const playButton = document.getElementById("play-button");
 
     const config = {{responsive: true, displaylogo: false}};
+    const classPlotColors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"];
+    function colorForClassIndex(index) {{
+      return classPlotColors[index % classPlotColors.length];
+    }}
     let isProgrammaticCameraUpdate = false;
 
     function cloneObject(value) {{
@@ -730,6 +814,7 @@ def write_ring_graph_viewer(
           name: `${{item.first.classDisplay}}: ${{item.first.className}}`,
           histnorm: "probability density",
           opacity: 0.88,
+          marker: {{color: colorForClassIndex(classSummaries.indexOf(item)), line: {{color: "#202020", width: 1}}}},
           xbins: {{
             start: payload.distanceRange[0],
             end: payload.distanceRange[1],
@@ -779,10 +864,93 @@ def write_ring_graph_viewer(
         bargroupgap: 0.02,
         margin: {{l: 56, r: 16, t: 72, b: 56}},
         legend: {{orientation: "h", y: 1.18, x: 0.0}},
+        paper_bgcolor: "#ffffff",
+        plot_bgcolor: "#ffffff",
+        font: {{color: "#202020"}},
         shapes: shapes,
         annotations: annotations
       }};
       Plotly.react(histogramDiv, traces, layout, config);
+    }}
+
+    function updateDistanceAngleScatter(graph) {{
+      const traces = [];
+      for (let classIndex = 0; classIndex < classLabels.length; classIndex += 1) {{
+        const label = classLabels[classIndex];
+        const graphs = graphsByClass[label] || [];
+        if (graphs.length === 0) continue;
+        const first = graphs[0];
+        const xAngles = [];
+        const yDistances = [];
+        const hoverText = [];
+        for (const classGraph of graphs) {{
+          const angles = finiteNumberArray(classGraph.closestInnerOuterAngleDeg);
+          const distances = finiteNumberArray(classGraph.closestInnerOuterDistances);
+          const n = Math.min(angles.length, distances.length);
+          for (let i = 0; i < n; i += 1) {{
+            xAngles.push(angles[i]);
+            yDistances.push(distances[i]);
+            hoverText.push(`${{classGraph.classDisplay}} (${{classGraph.className}})<br>graph=${{classGraph.name}}<br>angle gap=${{angles[i].toFixed(3)}} deg<br>closest distance=${{distances[i].toFixed(4)}}`);
+          }}
+        }}
+        traces.push({{
+          type: "scatter",
+          mode: "markers",
+          x: xAngles,
+          y: yDistances,
+          name: `${{first.classDisplay}}: ${{first.className}}`,
+          marker: {{
+            color: colorForClassIndex(classIndex),
+            size: 10,
+            opacity: 0.85,
+            line: {{color: "#202020", width: 1}}
+          }},
+          text: hoverText,
+          hoverinfo: "text"
+        }});
+      }}
+
+      const selectedAngles = finiteNumberArray(graph.closestInnerOuterAngleDeg);
+      const selectedDistances = finiteNumberArray(graph.closestInnerOuterDistances);
+      const selectedN = Math.min(selectedAngles.length, selectedDistances.length);
+      if (selectedN > 0) {{
+        traces.push({{
+          type: "scatter",
+          mode: "markers",
+          x: selectedAngles.slice(0, selectedN),
+          y: selectedDistances.slice(0, selectedN),
+          name: "selected graph",
+          marker: {{
+            color: "#000000",
+            size: 15,
+            symbol: "x",
+            line: {{color: "#000000", width: 2}}
+          }},
+          hovertemplate: "selected graph<br>angle=%{{x:.3f}} deg<br>distance=%{{y:.4f}}<extra></extra>"
+        }});
+      }}
+
+      const layout = {{
+        title: {{text: "Angle gap vs closest distance", x: 0.02, xanchor: "left"}},
+        xaxis: {{
+          title: "nearest inner-to-outer angle gap (degrees)",
+          range: payload.angleRangeDeg,
+          gridcolor: "#e5e5e5",
+          zerolinecolor: "#999999"
+        }},
+        yaxis: {{
+          title: "closest distance",
+          range: payload.distanceRange,
+          gridcolor: "#e5e5e5",
+          zerolinecolor: "#999999"
+        }},
+        margin: {{l: 56, r: 16, t: 52, b: 56}},
+        legend: {{orientation: "h", y: 1.18, x: 0.0}},
+        paper_bgcolor: "#ffffff",
+        plot_bgcolor: "#ffffff",
+        font: {{color: "#202020"}}
+      }};
+      Plotly.react(angleDistanceDiv, traces, layout, config);
     }}
 
     function makeTraces(graph) {{
@@ -891,6 +1059,7 @@ def write_ring_graph_viewer(
       status.textContent = `${{graph.classDisplay}} graph ${{index + 1}}/${{graphs.length}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
       details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg | closest inner-outer mean ${{formatDistance(graph.closestInnerOuterDistanceMean)}}`;
       updateDistanceHistogram(graph);
+      updateDistanceAngleScatter(graph);
       refreshClassButtons();
     }}
 
