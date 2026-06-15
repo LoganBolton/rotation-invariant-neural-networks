@@ -1,10 +1,13 @@
-"""Distance-labeled rotating-ring graph dataset and HTML-viewer CLI.
+"""Min-distance-labeled rotating-ring graph dataset and HTML-viewer CLI.
 
-Each graph has one center node, an inner ring, and an outer ring.  Labels are
-assigned from measured geometry: for each inner node, find the nearest outer
-node, average those distances for the graph, then split the generated graphs
-into balanced "close" and "far" classes.  This works for equal or mixed ring
-sizes because it never assumes nodes are paired by index.
+Each graph has one center node, an inner ring, and an outer ring. Labels are
+assigned from measured geometry: compute the nearest outer-node distance for
+each inner-ring node, then use the single smallest of those distances for the
+graph-level close/far split. In other words, the class signal is the
+"minnest min", not the average of per-inner nearest distances.
+
+This still works for equal or mixed ring sizes because it never assumes inner
+and outer nodes are paired by index.
 """
 
 from __future__ import annotations
@@ -351,7 +354,7 @@ def create_rotating_ring_dataset(
     outer_3d_rotation_range: tuple[float, float] = (0.0, 0.0),
     outer_3d_axis_angle: float = 0.0,
     global_rotation_fraction_range: tuple[float, float] = (0.0, 0.0),
-    distance_split_statistic: str = "mean",
+    distance_split_statistic: str = "min",
     smooth_order: bool = True,
     shuffle: bool = False,
     add_inner_ring_edges: bool = False,
@@ -359,13 +362,21 @@ def create_rotating_ring_dataset(
     add_center_outer_edges: bool = False,
     dtype: torch.dtype | None = None,
 ) -> list[RingGraphEnvironment]:
-    """Generate graphs, then label the lower/upper halves by measured distance."""
+    """Generate graphs, then label halves by each graph's minimum nearest distance.
+
+    ``distance_split_statistic`` is kept as an API-compatible keyword, but this
+    variant intentionally only supports ``"min"`` so the split is based on the
+    single smallest inner-to-outer nearest distance in each graph.
+    """
 
     if n_graphs <= 1:
         raise ValueError(f"n_graphs must be at least 2 for a balanced split, got {n_graphs}.")
     _validate_positive(n_inner=n_inner, n_outer=n_outer)
-    if distance_split_statistic not in {"min", "mean", "max"}:
-        raise ValueError("distance_split_statistic must be one of {'min', 'mean', 'max'}.")
+    if distance_split_statistic != "min":
+        raise ValueError(
+            "This min-distance dataset variant only supports "
+            "distance_split_statistic='min'."
+        )
 
     ranges = {
         "inner_radius_range": inner_radius_range,
@@ -420,8 +431,9 @@ def create_rotating_ring_dataset(
                     "outer_3d_axis_angle": float(outer_3d_axis_angle),
                     "outer_3d_axis_deg": _degrees(outer_3d_axis_angle),
                     "global_rotation_fraction": float(global_fraction),
-                    "class_distance_mode": "distance_histogram_split",
-                    "distance_split_statistic": distance_split_statistic,
+                    "class_distance_mode": "minimum_nearest_distance_split",
+                    "distance_split_statistic": "min",
+                    "distance_histogram_value_name": "closest_inner_outer_distance_min",
                     "inner_radius_range": tuple(map(float, inner_radius_range)),
                     "outer_gap_range": tuple(map(float, outer_gap_range)),
                     "outer_rotation_fraction_range": tuple(map(float, outer_rotation_fraction_range)),
@@ -570,7 +582,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--inner-radius-max", type=float, default=1.0)
     parser.add_argument("--outer-gap-min", type=float, default=1.2)
     parser.add_argument("--outer-gap-max", type=float, default=1.2)
-    parser.add_argument("--distance-split-statistic", choices=("min", "mean", "max"), default="mean")
+    parser.add_argument("--distance-split-statistic", choices=("min",), default="min")
     parser.add_argument("--outer-rotation-frac-min", type=float, default=0.0)
     parser.add_argument("--outer-rotation-frac-max", type=float, default=0.5)
     parser.add_argument("--outer-3d-rotation-deg", type=float, default=None)

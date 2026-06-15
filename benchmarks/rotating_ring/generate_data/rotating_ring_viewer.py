@@ -1,4 +1,4 @@
-"""Plotly HTML viewer for rotating-ring graph datasets."""
+"""Compact Plotly HTML viewer for rotating-ring graph datasets."""
 
 from __future__ import annotations
 
@@ -30,510 +30,303 @@ except ImportError:
     )
 
 
-VIEWER_TEMPLATE_VERSION = "single-slider-smooth-outer3d-camera-distance-v11"
-VIEWER_VERSION = "single-slider-smooth-outer3d-camera-distance-v11"
+VIEWER_VERSION = "single-slider-smooth-outer3d-camera-min-distance-v1"
+VIEWER_TEMPLATE_VERSION = VIEWER_VERSION
+DEGREES = 180.0 / pi
+ROLE_COLORS = {CENTER_ROLE: "#f47c20", INNER_ROLE: "#145f7a", OUTER_ROLE: "#44a9cc"}
+ROLE_NAMES = {CENTER_ROLE: "center", INNER_ROLE: "inner", OUTER_ROLE: "outer"}
 
 
-# -----------------------------------------------------------------------------
-# Plotly HTML viewer
-# -----------------------------------------------------------------------------
-
-
-def _edge_trace_for_env(env: RingGraphEnvironment) -> Any:
-    import plotly.graph_objects as go
-
-    x: list[float | None] = []
-    y: list[float | None] = []
-    z: list[float | None] = []
-    for src, dst in undirected_edge_pairs(env.edge_index):
-        x.extend([float(env.R[src, 0]), float(env.R[dst, 0]), None])
-        y.extend([float(env.R[src, 1]), float(env.R[dst, 1]), None])
-        z.extend([float(env.R[src, 2]), float(env.R[dst, 2]), None])
-
-    return go.Scatter3d(
-        x=x,
-        y=y,
-        z=z,
-        mode="lines",
-        line={"width": 5, "color": "rgba(120,120,120,0.75)"},
-        hoverinfo="skip",
-        showlegend=False,
-        name="edges",
-    )
-
-
-def _node_trace_for_env(env: RingGraphEnvironment) -> Any:
-    import plotly.graph_objects as go
-
-    role_to_color = {
-        CENTER_ROLE: "#f47c20",
-        INNER_ROLE: "#145f7a",
-        OUTER_ROLE: "#44a9cc",
-    }
-    role_to_name = {
-        CENTER_ROLE: "center",
-        INNER_ROLE: "inner",
-        OUTER_ROLE: "outer",
-    }
-    colors = [role_to_color[int(role)] for role in env.node_role.tolist()]
-    hover = [
-        f"node {i}<br>role={role_to_name[int(role)]}<br>x={env.R[i,0]:.3f}<br>y={env.R[i,1]:.3f}<br>z={env.R[i,2]:.3f}"
-        for i, role in enumerate(env.node_role.tolist())
-    ]
-
-    return go.Scatter3d(
-        x=env.R[:, 0].tolist(),
-        y=env.R[:, 1].tolist(),
-        z=env.R[:, 2].tolist(),
-        mode="markers",
-        marker={
-            "size": 9,
-            "color": colors,
-            "line": {"width": 1.5, "color": "#202020"},
-        },
-        text=[str(i) for i in range(env.n_nodes)],
-        hovertext=hover,
-        hoverinfo="text",
-        showlegend=False,
-        name="nodes",
-    )
-
-
-def _viewer_title(env: RingGraphEnvironment, index: int, total: int) -> str:
-    meta = dict(env.metadata)
-    deg = 180.0 / pi
-    return (
-        f"Graph {index + 1}/{total}: {env.name} | "
-        f"label={env.label} ({meta.get('class_name', 'unknown')}) | "
-        f"r_inner={meta.get('inner_radius', float('nan')):.3f}, "
-        f"r_outer={meta.get('outer_radius', float('nan')):.3f}, "
-        f"outer phase={meta.get('outer_phase_clockwise', float('nan')) * deg:.1f} deg, "
-        f"outer 3D tilt={meta.get('outer_3d_rotation', 0.0) * deg:.1f} deg"
-    )
-
-
-def _wrapped_angle_difference_degrees(angle_a: torch.Tensor, angle_b: torch.Tensor) -> torch.Tensor:
-    """Return the absolute wrapped angular difference in degrees.
-
-    The result is in [0, 180]. This is used as a viewer diagnostic: it reports
-    the xy-plane angular gap between each inner node and its nearest outer node.
-    """
-
-    diff = torch.atan2(torch.sin(angle_a - angle_b), torch.cos(angle_a - angle_b)).abs()
-    return diff * (180.0 / pi)
-
-
-def _closest_inner_outer_distance_angle_pairs(env: RingGraphEnvironment) -> tuple[list[float], list[float]]:
-    """Return nearest outer distance and xy-angle gap for each inner node.
-
-    For every inner-ring node, this computes the nearest outer-ring node by full
-    3D Euclidean distance. It then reports both the closest distance and the
-    absolute wrapped xy-plane angular gap to that same nearest outer node.
-    """
-
-    inner_mask = env.node_role == INNER_ROLE
-    outer_mask = env.node_role == OUTER_ROLE
-    inner_points = env.R[inner_mask]
-    outer_points = env.R[outer_mask]
-    if inner_points.numel() == 0 or outer_points.numel() == 0:
-        return [], []
-
-    distances = torch.cdist(inner_points, outer_points, p=2.0)
-    closest_values, closest_outer_indices = distances.min(dim=1)
-
-    inner_angles = torch.atan2(inner_points[:, 1], inner_points[:, 0])
-    nearest_outer_points = outer_points[closest_outer_indices]
-    nearest_outer_angles = torch.atan2(nearest_outer_points[:, 1], nearest_outer_points[:, 0])
-    angle_gaps_deg = _wrapped_angle_difference_degrees(inner_angles, nearest_outer_angles)
-
-    return (
-        [float(value) for value in closest_values.tolist()],
-        [float(value) for value in angle_gaps_deg.tolist()],
-    )
-
-
-def _closest_inner_outer_distances(env: RingGraphEnvironment) -> list[float]:
-    """Return the nearest outer-ring distance for each inner-ring node."""
-
-    distances, _ = _closest_inner_outer_distance_angle_pairs(env)
-    return distances
-
-
-def _summary_from_values(values: list[float]) -> dict[str, float]:
-    """Return min/mean/max summary values for a list of distances."""
-
-    clean = [float(value) for value in values if value == value]
-    if not clean:
-        nan = float("nan")
-        return {"min": nan, "mean": nan, "max": nan}
-    return {
-        "min": min(clean),
-        "mean": sum(clean) / float(len(clean)),
-        "max": max(clean),
-    }
-
-
-def _finite_float_or_nan(value: Any) -> float:
-    """Return value as float, or NaN when it cannot be converted."""
-
+def _finite(value: Any, default: float = float("nan")) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
-        return float("nan")
+        return default
 
 
-def _validate_generated_viewer_html(html: str) -> None:
-    """Fail fast if this file ever emits the older class-button viewer."""
+def _is_finite(value: Any) -> bool:
+    value = _finite(value)
+    return value == value
 
-    required_markers = [
-        VIEWER_VERSION,
-        'id="graph-slider"',
-        'allGraphs',
-        'class-boundary',
-        'The single slider walks through all selected graphs',
-        'outer3DRotationDeg',
-        'closestInnerOuterDistances',
-        'id="distance-histogram"',
-        'updateDistanceHistogram',
-        'distanceRange',
-        'meanDistanceRange',
-        'closestInnerOuterAngleDeg',
-        'id="distance-angle-scatter"',
-        'updateDistanceAngleScatter',
-        'getCurrentCamera',
-        'rememberCurrentCamera',
-        'scene.camera',
-        'uirevision',
-        'distanceSplitCutoff',
-        'selected graph average',
-        'class cutoff',
-    ]
-    missing = [marker for marker in required_markers if marker not in html]
-    if missing:
-        raise RuntimeError(
-            "Generated HTML is missing the updated single-slider viewer markers: "
-            + ", ".join(missing)
+
+def _summary(values: list[float]) -> dict[str, float]:
+    clean = [_finite(value) for value in values if _is_finite(value)]
+    if not clean:
+        nan = float("nan")
+        return {"min": nan, "mean": nan, "max": nan}
+    return {"min": min(clean), "mean": sum(clean) / len(clean), "max": max(clean)}
+
+
+def _padded_range(values: list[float], *, pad_fraction: float, lower_bound: float | None = None) -> list[float]:
+    clean = [_finite(value) for value in values if _is_finite(value)]
+    if not clean:
+        return [0.0, 1.0]
+    low, high = min(clean), max(clean)
+    pad = pad_fraction * (high - low) if high > low else max(1.0e-6, 0.05 * abs(high), 0.05)
+    low -= pad
+    high += pad
+    if lower_bound is not None:
+        low = max(lower_bound, low)
+    return [low, high]
+
+
+def _wrapped_angle_difference_degrees(angle_a: torch.Tensor, angle_b: torch.Tensor) -> torch.Tensor:
+    diff = torch.atan2(torch.sin(angle_a - angle_b), torch.cos(angle_a - angle_b)).abs()
+    return diff * DEGREES
+
+
+def _closest_distance_angle_pairs(env: RingGraphEnvironment) -> tuple[list[float], list[float]]:
+    """For each inner node, return nearest outer distance and xy-angle gap."""
+
+    inner = env.R[env.node_role == INNER_ROLE]
+    outer = env.R[env.node_role == OUTER_ROLE]
+    if inner.numel() == 0 or outer.numel() == 0:
+        return [], []
+
+    distances = torch.cdist(inner, outer, p=2.0)
+    closest, outer_index = distances.min(dim=1)
+    inner_angles = torch.atan2(inner[:, 1], inner[:, 0])
+    outer_angles = torch.atan2(outer[outer_index, 1], outer[outer_index, 0])
+    gaps = _wrapped_angle_difference_degrees(inner_angles, outer_angles)
+    return [float(x) for x in closest.tolist()], [float(x) for x in gaps.tolist()]
+
+
+def _edge_coordinates(env: RingGraphEnvironment) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    coords: list[list[float | None]] = [[], [], []]
+    for src, dst in undirected_edge_pairs(env.edge_index):
+        for axis in range(3):
+            coords[axis].extend([float(env.R[src, axis]), float(env.R[dst, axis]), None])
+    return coords[0], coords[1], coords[2]
+
+
+def _node_hover(env: RingGraphEnvironment) -> list[str]:
+    hover = []
+    for index, role in enumerate(env.node_role.tolist()):
+        role_name = ROLE_NAMES.get(int(role), f"role {int(role)}")
+        hover.append(
+            "<br>".join(
+                [
+                    f"node {index}",
+                    f"role={role_name}",
+                    f"x={float(env.R[index, 0]):.3f}",
+                    f"y={float(env.R[index, 1]):.3f}",
+                    f"z={float(env.R[index, 2]):.3f}",
+                ]
+            )
         )
+    return hover
 
 
-def write_ring_graph_viewer(
+def _sort_key(item: tuple[int, RingGraphEnvironment]) -> tuple[float, int]:
+    original_index, env = item
+    meta = dict(env.metadata)
+    for key in ("class_index", "distance_split_rank", "variation_t", "generation_index"):
+        if key in meta:
+            value = _finite(meta[key])
+            if value == value:
+                return value, original_index
+    return float(original_index), original_index
+
+
+def _select_by_label(
     environments: list[RingGraphEnvironment],
-    html_path: str | Path,
-    *,
-    max_graphs: int | None = 500,
-    include_plotlyjs: bool | str = True,
-) -> None:
-    """Write an interactive 3D Plotly viewer with one continuous slider.
+    max_graphs: int | None,
+) -> tuple[list[int], dict[int, list[tuple[int, RingGraphEnvironment]]]]:
+    by_label: dict[int, list[tuple[int, RingGraphEnvironment]]] = {}
+    for index, env in enumerate(environments):
+        by_label.setdefault(int(env.label), []).append((index, env))
 
-    Graphs are still selected evenly from each class and sorted by class, then
-    by the distance split order when available. The HTML viewer exposes one
-    slider over that combined order; when the slider crosses from one label to
-    the next, the status/header text changes to show the active class.
-
-    The top histogram shows one value per graph: the average nearest
-    inner-to-outer distance. The dotted vertical line is the class cutoff from
-    the split thresholds. The dashed vertical line is the currently selected
-    graph average. The bottom angle-vs-distance scatter keeps the raw per-inner
-    nearest-node diagnostics.
-    """
-
-    if not environments:
-        raise ValueError("Cannot write a viewer for an empty environment list.")
-
-    html_path = Path(html_path)
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def sort_value(item: tuple[int, RingGraphEnvironment]) -> tuple[float, int]:
-        original_index, env = item
-        meta = dict(env.metadata)
-
-        # Prefer the split order/class order because labels are assigned from the
-        # measured closest-distance statistic. This matters for mixed-count rings,
-        # where the rotation parameter is not always monotonic in distance.
-        for key in ("class_index", "distance_split_rank", "variation_t", "generation_index"):
-            if key in meta:
-                try:
-                    return float(meta[key]), int(original_index)
-                except (TypeError, ValueError):
-                    pass
-        return float(original_index), int(original_index)
-
-    items_by_label: dict[int, list[tuple[int, RingGraphEnvironment]]] = {}
-    for original_index, env in enumerate(environments):
-        items_by_label.setdefault(int(env.label), []).append((original_index, env))
-
-    labels = sorted(items_by_label)
+    labels = sorted(by_label)
     for label in labels:
-        items_by_label[label].sort(key=sort_value)
+        by_label[label].sort(key=_sort_key)
 
-    # Keep the viewer balanced across classes when max_graphs is smaller than
-    # the full dataset. This preserves the class switch even for small previews.
-    selected_by_label: dict[int, list[tuple[int, RingGraphEnvironment]]] = {}
     if max_graphs is None:
-        selected_by_label = {label: list(items_by_label[label]) for label in labels}
-    else:
-        requested = max(1, int(max_graphs))
-        per_label = max(1, requested // max(1, len(labels)))
-        remainder = max(0, requested - per_label * len(labels))
-        for label_i, label in enumerate(labels):
-            limit = per_label + (1 if label_i < remainder else 0)
-            selected_by_label[label] = list(items_by_label[label][:limit])
+        return labels, {label: list(by_label[label]) for label in labels}
 
+    requested = max(1, int(max_graphs))
+    per_label = max(1, requested // max(1, len(labels)))
+    remainder = max(0, requested - per_label * len(labels))
+    return labels, {
+        label: by_label[label][: per_label + (1 if offset < remainder else 0)]
+        for offset, label in enumerate(labels)
+    }
+
+
+def _class_name(label: int, meta: dict[str, Any]) -> str:
+    if 0 <= label < len(RING_GRAPH_CLASS_NAMES):
+        return str(meta.get("class_name", RING_GRAPH_CLASS_NAMES[label]))
+    return str(meta.get("class_name", f"label {label}"))
+
+
+def _split_cutoff(meta: dict[str, Any]) -> tuple[float, float, float]:
+    low = _finite(meta.get("distance_split_threshold_low"))
+    high = _finite(meta.get("distance_split_threshold_high"))
+    cutoff = 0.5 * (low + high) if low == low and high == high else float("nan")
+    return low, high, cutoff
+
+
+def _record(
+    *,
+    label: int,
+    class_position: int,
+    class_total: int,
+    original_index: int,
+    env: RingGraphEnvironment,
+) -> dict[str, Any]:
+    meta = dict(env.metadata)
+    fallback_t = 0.0 if class_total <= 1 else class_position / float(class_total - 1)
+    variation_t = _finite(meta.get("variation_t"), fallback_t)
+    if variation_t != variation_t:
+        variation_t = fallback_t
+
+    class_name = _class_name(label, meta)
+    class_display = f"Class {label + 1}"
+    distances, angle_gaps = _closest_distance_angle_pairs(env)
+    distance_summary = _summary(distances)
+    angle_summary = _summary(angle_gaps)
+    threshold_low, threshold_high, cutoff = _split_cutoff(meta)
+
+    inner_radius = _finite(meta.get("inner_radius"))
+    outer_radius = _finite(meta.get("outer_radius"))
+    outer_rotation = _finite(meta.get("outer_rotation_clockwise"))
+    outer_phase = _finite(meta.get("outer_phase_clockwise"))
+    outer_3d_rotation = _finite(meta.get("outer_3d_rotation"), 0.0)
+    outer_3d_axis_angle = _finite(meta.get("outer_3d_axis_angle"), 0.0)
+    global_rotation = _finite(meta.get("global_rotation"))
+    edge_x, edge_y, edge_z = _edge_coordinates(env)
+
+    title = (
+        f"{class_display} ({class_name}) | variation {100.0 * variation_t:.1f}% | "
+        f"graph {class_position + 1}/{class_total}<br>"
+        f"r_inner={inner_radius:.3f}, r_outer={outer_radius:.3f}, "
+        f"outer rotation={outer_rotation * DEGREES:.1f} deg, "
+        f"outer phase={outer_phase * DEGREES:.1f} deg, "
+        f"outer 3D tilt={outer_3d_rotation * DEGREES:.1f} deg, "
+        f"global rotation={global_rotation * DEGREES:.1f} deg"
+    )
+
+    return {
+        "label": int(label),
+        "classDisplay": class_display,
+        "className": class_name,
+        "classGraphIndex": int(class_position),
+        "classGraphCount": int(class_total),
+        "originalDatasetIndex": int(original_index),
+        "name": env.name,
+        "variationT": float(variation_t),
+        "title": title,
+        "innerRadius": inner_radius,
+        "outerRadius": outer_radius,
+        "outerRotationDeg": outer_rotation * DEGREES,
+        "outerPhaseDeg": outer_phase * DEGREES,
+        "outer3DRotationDeg": outer_3d_rotation * DEGREES,
+        "outer3DAxisDeg": outer_3d_axis_angle * DEGREES,
+        "globalRotationDeg": global_rotation * DEGREES,
+        "closestInnerOuterDistances": distances,
+        "closestInnerOuterAngleDeg": angle_gaps,
+        "closestInnerOuterDistanceMin": distance_summary["min"],
+        "closestInnerOuterDistanceMean": distance_summary["mean"],
+        "closestInnerOuterDistanceMax": distance_summary["max"],
+        "distanceSplitThresholdLow": threshold_low,
+        "distanceSplitThresholdHigh": threshold_high,
+        "distanceSplitCutoff": cutoff,
+        "closestInnerOuterAngleMinDeg": angle_summary["min"],
+        "closestInnerOuterAngleMeanDeg": angle_summary["mean"],
+        "closestInnerOuterAngleMaxDeg": angle_summary["max"],
+        "nodeX": [float(x) for x in env.R[:, 0].tolist()],
+        "nodeY": [float(y) for y in env.R[:, 1].tolist()],
+        "nodeZ": [float(z) for z in env.R[:, 2].tolist()],
+        "nodeColor": [ROLE_COLORS.get(int(role), "#999999") for role in env.node_role.tolist()],
+        "nodeHover": _node_hover(env),
+        "edgeX": edge_x,
+        "edgeY": edge_y,
+        "edgeZ": edge_z,
+    }
+
+
+def _payload(environments: list[RingGraphEnvironment], max_graphs: int | None) -> dict[str, Any]:
+    labels, selected_by_label = _select_by_label(environments, max_graphs)
     selected_items = [item for label in labels for item in selected_by_label[label]]
     if not selected_items:
         raise ValueError("No graphs selected for the viewer.")
 
-    max_radius = max(
-        float(torch.linalg.vector_norm(env.R, dim=1).max().item())
-        for _, env in selected_items
-    )
-    axis_range = [-1.15 * max_radius, 1.15 * max_radius]
-    z_range = list(axis_range)
-
-    role_to_color = {
-        CENTER_ROLE: "#f47c20",
-        INNER_ROLE: "#145f7a",
-        OUTER_ROLE: "#44a9cc",
-    }
-    role_to_name = {
-        CENTER_ROLE: "center",
-        INNER_ROLE: "inner",
-        OUTER_ROLE: "outer",
-    }
-
     records: list[dict[str, Any]] = []
-    deg = 180.0 / pi
-
     for label in labels:
         group = selected_by_label[label]
-        class_total = len(group)
-        if class_total == 0:
-            continue
-
-        for class_position, (original_index, env) in enumerate(group):
-            meta = dict(env.metadata)
-            fallback_t = 0.0 if class_total <= 1 else class_position / float(class_total - 1)
-            try:
-                variation_t = float(meta.get("variation_t", fallback_t))
-            except (TypeError, ValueError):
-                variation_t = fallback_t
-
-            if 0 <= label < len(RING_GRAPH_CLASS_NAMES):
-                class_name = str(meta.get("class_name", RING_GRAPH_CLASS_NAMES[label]))
-            else:
-                class_name = str(meta.get("class_name", f"label {label}"))
-            class_display = f"Class {label + 1}"
-
-            edge_x: list[float | None] = []
-            edge_y: list[float | None] = []
-            edge_z: list[float | None] = []
-            for src, dst in undirected_edge_pairs(env.edge_index):
-                edge_x.extend([float(env.R[src, 0]), float(env.R[dst, 0]), None])
-                edge_y.extend([float(env.R[src, 1]), float(env.R[dst, 1]), None])
-                edge_z.extend([float(env.R[src, 2]), float(env.R[dst, 2]), None])
-
-            node_x = [float(x) for x in env.R[:, 0].tolist()]
-            node_y = [float(y) for y in env.R[:, 1].tolist()]
-            node_z = [float(z) for z in env.R[:, 2].tolist()]
-            node_colors = [role_to_color.get(int(role), "#999999") for role in env.node_role.tolist()]
-            node_hover = []
-            for node_i, role in enumerate(env.node_role.tolist()):
-                role_name = role_to_name.get(int(role), f"role {int(role)}")
-                node_hover.append(
-                    "<br>".join(
-                        [
-                            f"node {node_i}",
-                            f"role={role_name}",
-                            f"x={float(env.R[node_i, 0]):.3f}",
-                            f"y={float(env.R[node_i, 1]):.3f}",
-                            f"z={float(env.R[node_i, 2]):.3f}",
-                        ]
-                    )
-                )
-
-            inner_radius = float(meta.get("inner_radius", float("nan")))
-            outer_radius = float(meta.get("outer_radius", float("nan")))
-            outer_phase = float(meta.get("outer_phase_clockwise", float("nan")))
-            outer_rotation = float(meta.get("outer_rotation_clockwise", float("nan")))
-            outer_3d_rotation = float(meta.get("outer_3d_rotation", 0.0))
-            outer_3d_axis_angle = float(meta.get("outer_3d_axis_angle", 0.0))
-            global_rotation = float(meta.get("global_rotation", float("nan")))
-
-            (
-                closest_inner_outer_distances,
-                closest_inner_outer_angle_deg,
-            ) = _closest_inner_outer_distance_angle_pairs(env)
-
-            closest_inner_outer_summary = _summary_from_values(closest_inner_outer_distances)
-            closest_inner_outer_angle_summary = _summary_from_values(closest_inner_outer_angle_deg)
-
-            distance_split_threshold_low = _finite_float_or_nan(
-                meta.get("distance_split_threshold_low", float("nan"))
-            )
-            distance_split_threshold_high = _finite_float_or_nan(
-                meta.get("distance_split_threshold_high", float("nan"))
-            )
-            if (
-                distance_split_threshold_low == distance_split_threshold_low
-                and distance_split_threshold_high == distance_split_threshold_high
-            ):
-                distance_split_cutoff = 0.5 * (
-                    distance_split_threshold_low + distance_split_threshold_high
-                )
-            else:
-                distance_split_cutoff = float("nan")
-
-            title = (
-                f"{class_display} ({class_name}) | variation {100.0 * variation_t:.1f}% | "
-                f"graph {class_position + 1}/{class_total}<br>"
-                f"r_inner={inner_radius:.3f}, r_outer={outer_radius:.3f}, "
-                f"outer rotation={outer_rotation * deg:.1f} deg, "
-                f"outer phase={outer_phase * deg:.1f} deg, "
-                f"outer 3D tilt={outer_3d_rotation * deg:.1f} deg, "
-                f"global rotation={global_rotation * deg:.1f} deg"
-            )
-
+        for i, (original_index, env) in enumerate(group):
             records.append(
-                {
-                    "label": int(label),
-                    "classDisplay": class_display,
-                    "className": class_name,
-                    "classGraphIndex": int(class_position),
-                    "classGraphCount": int(class_total),
-                    "originalDatasetIndex": int(original_index),
-                    "name": env.name,
-                    "variationT": float(variation_t),
-                    "title": title,
-                    "innerRadius": inner_radius,
-                    "outerRadius": outer_radius,
-                    "outerRotationDeg": outer_rotation * deg,
-                    "outerPhaseDeg": outer_phase * deg,
-                    "outer3DRotationDeg": outer_3d_rotation * deg,
-                    "outer3DAxisDeg": outer_3d_axis_angle * deg,
-                    "globalRotationDeg": global_rotation * deg,
-                    "closestInnerOuterDistances": closest_inner_outer_distances,
-                    "closestInnerOuterAngleDeg": closest_inner_outer_angle_deg,
-                    "closestInnerOuterDistanceMin": closest_inner_outer_summary["min"],
-                    "closestInnerOuterDistanceMean": closest_inner_outer_summary["mean"],
-                    "closestInnerOuterDistanceMax": closest_inner_outer_summary["max"],
-                    "distanceSplitThresholdLow": distance_split_threshold_low,
-                    "distanceSplitThresholdHigh": distance_split_threshold_high,
-                    "distanceSplitCutoff": distance_split_cutoff,
-                    "closestInnerOuterAngleMinDeg": closest_inner_outer_angle_summary["min"],
-                    "closestInnerOuterAngleMeanDeg": closest_inner_outer_angle_summary["mean"],
-                    "closestInnerOuterAngleMaxDeg": closest_inner_outer_angle_summary["max"],
-                    "nodeX": node_x,
-                    "nodeY": node_y,
-                    "nodeZ": node_z,
-                    "nodeColor": node_colors,
-                    "nodeHover": node_hover,
-                    "edgeX": edge_x,
-                    "edgeY": edge_y,
-                    "edgeZ": edge_z,
-                }
+                _record(
+                    label=label,
+                    class_position=i,
+                    class_total=len(group),
+                    original_index=original_index,
+                    env=env,
+                )
             )
 
-    # This range is for the bottom angle-vs-distance scatter, which still shows
-    # raw nearest distances for each inner node.
-    all_closest_distances = [
-        distance
-        for record in records
-        for distance in record["closestInnerOuterDistances"]
-        if distance == distance
-    ]
-    if all_closest_distances:
-        min_distance = min(all_closest_distances)
-        max_distance = max(all_closest_distances)
-        if max_distance > min_distance:
-            distance_padding = 0.05 * (max_distance - min_distance)
-        else:
-            distance_padding = max(1.0e-6, 0.05 * abs(max_distance), 0.05)
-        distance_range = [
-            min_distance - distance_padding,
-            max_distance + distance_padding,
-        ]
-    else:
-        distance_range = [0.0, 1.0]
+    max_radius = max(float(torch.linalg.vector_norm(env.R, dim=1).max().item()) for _, env in selected_items)
+    axis_range = [-1.15 * max_radius, 1.15 * max_radius]
+    min_values = [r["closestInnerOuterDistanceMin"] for r in records] + [r["distanceSplitCutoff"] for r in records]
+    min_range = _padded_range(min_values, pad_fraction=0.10)
 
-    # This range is for the top histogram. It shows graph-average distances,
-    # plus the cutoff marker. It should not be forced to start at zero.
-    all_mean_distances = [
-        float(record["closestInnerOuterDistanceMean"])
-        for record in records
-        if float(record["closestInnerOuterDistanceMean"]) == float(record["closestInnerOuterDistanceMean"])
-    ]
-    all_cutoff_values = [
-        float(record["distanceSplitCutoff"])
-        for record in records
-        if float(record["distanceSplitCutoff"]) == float(record["distanceSplitCutoff"])
-    ]
-    histogram_x_values = all_mean_distances + all_cutoff_values
-
-    if histogram_x_values:
-        min_hist_value = min(histogram_x_values)
-        max_hist_value = max(histogram_x_values)
-        if max_hist_value > min_hist_value:
-            histogram_padding = 0.10 * (max_hist_value - min_hist_value)
-        else:
-            histogram_padding = max(1.0e-6, 0.05 * abs(max_hist_value), 0.05)
-        mean_distance_range = [
-            min_hist_value - histogram_padding,
-            max_hist_value + histogram_padding,
-        ]
-    else:
-        mean_distance_range = [0.0, 1.0]
-
-    distance_bin_count = 80
-    distance_bin_size = max(
-        1.0e-9,
-        (mean_distance_range[1] - mean_distance_range[0]) / float(distance_bin_count),
-    )
-
-    all_closest_angle_deg = [
-        angle
-        for record in records
-        for angle in record["closestInnerOuterAngleDeg"]
-        if angle == angle
-    ]
-    if all_closest_angle_deg:
-        min_angle = min(all_closest_angle_deg)
-        max_angle = max(all_closest_angle_deg)
-        if max_angle > min_angle:
-            angle_padding = 0.05 * (max_angle - min_angle)
-        else:
-            angle_padding = max(1.0e-6, 0.05 * abs(max_angle), 0.05)
-        angle_range = [
-            max(0.0, min_angle - angle_padding),
-            max_angle + angle_padding,
-        ]
-    else:
-        angle_range = [0.0, 1.0]
-
-    payload = {
+    return {
         "viewerVersion": VIEWER_VERSION,
         "graphs": records,
         "axisRange": axis_range,
-        "zRange": z_range,
-        "distanceRange": distance_range,
-        "meanDistanceRange": mean_distance_range,
-        "distanceBinSize": distance_bin_size,
-        "angleRangeDeg": angle_range,
+        "zRange": list(axis_range),
+        "distanceRange": _padded_range(
+            [x for r in records for x in r["closestInnerOuterDistances"]],
+            pad_fraction=0.05,
+        ),
+        "minDistanceRange": min_range,
+        "distanceBinSize": max(1.0e-9, (min_range[1] - min_range[0]) / 80.0),
+        "angleRangeDeg": _padded_range(
+            [x for r in records for x in r["closestInnerOuterAngleDeg"]],
+            pad_fraction=0.05,
+            lower_bound=0.0,
+        ),
         "viewerTemplateVersion": VIEWER_TEMPLATE_VERSION,
     }
-    payload_json = json.dumps(payload, allow_nan=True)
 
+
+def _plotly_loader(include_plotlyjs: bool | str) -> str:
     if include_plotlyjs is True:
         from plotly.offline import get_plotlyjs
 
-        plotly_loader = f'<script type="text/javascript">{get_plotlyjs()}</script>'
-    elif include_plotlyjs == "cdn":
-        plotly_loader = '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>'
-    elif include_plotlyjs:
-        plotly_loader = f'<script src="{escape(str(include_plotlyjs))}"></script>'
-    else:
-        plotly_loader = ""
+        return f'<script type="text/javascript">{get_plotlyjs()}</script>'
+    if include_plotlyjs == "cdn":
+        return '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>'
+    if include_plotlyjs:
+        return f'<script src="{escape(str(include_plotlyjs))}"></script>'
+    return ""
 
-    html = f"""<!doctype html>
+
+def _validate_generated_viewer_html(html: str) -> None:
+    required = [
+        VIEWER_VERSION,
+        'id="graph-slider"',
+        "allGraphs",
+        "class-boundary",
+        "outer3DRotationDeg",
+        "closestInnerOuterDistances",
+        'id="distance-histogram"',
+        "updateDistanceHistogram",
+        "closestInnerOuterAngleDeg",
+        'id="distance-angle-scatter"',
+        "updateDistanceAngleScatter",
+        "getCurrentCamera",
+        "rememberCurrentCamera",
+        "distanceSplitCutoff",
+        "selected graph minimum",
+        "class cutoff",
+    ]
+    missing = [marker for marker in required if marker not in html]
+    if missing:
+        raise RuntimeError("Generated HTML is missing required viewer markers: " + ", ".join(missing))
+
+
+def _render_html(payload_json: str, plotly_loader: str) -> str:
+    return f"""<!doctype html>
 <!-- rotating-ring-viewer-template: {VIEWER_VERSION} -->
 <html lang="en">
 <!-- viewer-version: {VIEWER_VERSION} -->
@@ -702,12 +495,12 @@ def write_ring_graph_viewer(
   <div id="viewer-body">
     <div id="plot"></div>
     <section id="distance-panel" aria-label="Closest inner-to-outer distance diagnostics">
-      <h2>Average closest inner-to-outer distance</h2>
+      <h2>Minimum closest inner-to-outer distance</h2>
       <div id="distance-summary"></div>
       <div id="distance-histogram"></div>
       <h2 class="scatter-heading">Angle gap vs closest distance</h2>
       <div id="distance-angle-scatter"></div>
-      <div class="distance-note">The histogram shows one value per graph: the average nearest outer-ring distance across inner-ring nodes. The dotted vertical line is the class cutoff. The dashed vertical line is the selected graph average. The scatter plot below is unchanged: it shows the raw nearest-node pairs as angle gap vs distance.</div>
+      <div class="distance-note">The histogram shows one value per graph: the minimum nearest outer-ring distance across inner-ring nodes. The dotted vertical line is the class cutoff. The dashed vertical line is the selected graph minimum. The scatter plot below is unchanged: it shows the raw nearest-node pairs as angle gap vs distance.</div>
     </section>
   </div>
 
@@ -860,11 +653,11 @@ def write_ring_graph_viewer(
       }};
     }}
 
-    function meanDistancesForClass(label) {{
+    function minDistancesForClass(label) {{
       const graphs = graphsByClass[String(label)] || [];
       const values = [];
       for (const graph of graphs) {{
-        const value = finiteNumber(graph.closestInnerOuterDistanceMean);
+        const value = finiteNumber(graph.closestInnerOuterDistanceMin);
         if (Number.isFinite(value)) values.push(value);
       }}
       return values;
@@ -914,11 +707,11 @@ def write_ring_graph_viewer(
         const graphs = graphsByClass[label] || [];
         if (graphs.length === 0) continue;
         const first = graphs[0];
-        const meanDistances = meanDistancesForClass(label);
-        const classSummary = summarizeDistances(meanDistances);
-        classSummaries.push({{label: label, first: first, distances: meanDistances, summary: classSummary}});
+        const minDistances = minDistancesForClass(label);
+        const classSummary = summarizeDistances(minDistances);
+        classSummaries.push({{label: label, first: first, distances: minDistances, summary: classSummary}});
         summaryLines.push(
-          `${{first.classDisplay}} (${{first.className}}): graphs=${{classSummary.count}}, min avg=${{formatDistance(classSummary.min)}}, mean avg=${{formatDistance(classSummary.mean)}}, max avg=${{formatDistance(classSummary.max)}}`
+          `${{first.classDisplay}} (${{first.className}}): graphs=${{classSummary.count}}, min=${{formatDistance(classSummary.min)}}, mean=${{formatDistance(classSummary.mean)}}, max=${{formatDistance(classSummary.max)}}`
         );
       }}
 
@@ -947,24 +740,24 @@ def write_ring_graph_viewer(
         }});
       }}
 
-      const selectedAverage = finiteNumber(graph.closestInnerOuterDistanceMean);
-      if (Number.isFinite(selectedAverage)) {{
+      const selectedMinimum = finiteNumber(graph.closestInnerOuterDistanceMin);
+      if (Number.isFinite(selectedMinimum)) {{
         shapes.push({{
           type: "line",
           xref: "x",
           yref: "paper",
-          x0: selectedAverage,
-          x1: selectedAverage,
+          x0: selectedMinimum,
+          x1: selectedMinimum,
           y0: 0,
           y1: 1,
           line: {{width: 3, dash: "dash", color: "#202020"}}
         }});
         annotations.push({{
-          x: selectedAverage,
+          x: selectedMinimum,
           y: 1.02,
           xref: "x",
           yref: "paper",
-          text: "selected graph average",
+          text: "selected graph minimum",
           showarrow: false,
           font: {{size: 11, color: "#202020"}}
         }});
@@ -980,19 +773,19 @@ def write_ring_graph_viewer(
           opacity: 0.88,
           marker: {{color: colorForClassIndex(classIndex), line: {{color: "#202020", width: 1}}}},
           xbins: {{
-            start: payload.meanDistanceRange[0],
-            end: payload.meanDistanceRange[1],
+            start: payload.minDistanceRange[0],
+            end: payload.minDistanceRange[1],
             size: payload.distanceBinSize
           }},
-          hovertemplate: "graph average distance=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
+          hovertemplate: "graph minimum distance=%{{x:.4f}}<br>density=%{{y:.4f}}<extra>%{{fullData.name}}</extra>"
         }});
       }}
 
       const selectedRawSummary = summarizeDistances(graph.closestInnerOuterDistances);
       const cutoffLine = Number.isFinite(cutoff)
-        ? `<strong>Class cutoff</strong>: average distance = ${{formatDistance(cutoff)}}`
+        ? `<strong>Class cutoff</strong>: minimum distance = ${{formatDistance(cutoff)}}`
         : `<strong>Class cutoff</strong>: n/a`;
-      const selectedLine = `<strong>Selected graph average</strong>: ${{formatDistance(selectedAverage)}}`;
+      const selectedLine = `<strong>Selected graph minimum</strong>: ${{formatDistance(selectedMinimum)}}`;
       const rawLine = `<strong>Selected raw nearest distances</strong>: n=${{selectedRawSummary.count}}, min=${{formatDistance(selectedRawSummary.min)}}, mean=${{formatDistance(selectedRawSummary.mean)}}, max=${{formatDistance(selectedRawSummary.max)}}`;
 
       distanceSummary.innerHTML = [
@@ -1004,8 +797,8 @@ def write_ring_graph_viewer(
 
       const layout = {{
         xaxis: {{
-          title: "average closest distance from inner nodes to outer ring",
-          range: payload.meanDistanceRange
+          title: "minimum closest distance from any inner node to the outer ring",
+          range: payload.minDistanceRange
         }},
         yaxis: {{title: "probability density", rangemode: "tozero"}},
         barmode: "overlay",
@@ -1180,7 +973,7 @@ def write_ring_graph_viewer(
         }}
       }});
       status.textContent = `${{graph.classDisplay}}: ${{graph.className}} | graph ${{index + 1}}/${{allGraphs.length}} | class graph ${{graph.classGraphIndex + 1}}/${{graph.classGraphCount}} | variation ${{(100 * graph.variationT).toFixed(1)}}%`;
-      details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg | closest inner-outer mean ${{formatDistance(graph.closestInnerOuterDistanceMean)}}`;
+      details.textContent = `dataset index ${{graph.originalDatasetIndex}} | ${{graph.name}} | inner radius ${{graph.innerRadius.toFixed(3)}} | outer radius ${{graph.outerRadius.toFixed(3)}} | outer rotation ${{graph.outerRotationDeg.toFixed(1)}} deg | outer phase ${{graph.outerPhaseDeg.toFixed(1)}} deg | outer 3D tilt ${{graph.outer3DRotationDeg.toFixed(1)}} deg | tilt axis ${{graph.outer3DAxisDeg.toFixed(1)}} deg | closest inner-outer min ${{formatDistance(graph.closestInnerOuterDistanceMin)}}`;
       updateClassBoundaryText(graph, index);
       updateDistanceHistogram(graph);
       updateDistanceAngleScatter(graph);
@@ -1246,5 +1039,22 @@ def write_ring_graph_viewer(
 </html>
 """
 
+
+
+def write_ring_graph_viewer(
+    environments: list[RingGraphEnvironment],
+    html_path: str | Path,
+    *,
+    max_graphs: int | None = 500,
+    include_plotlyjs: bool | str = True,
+) -> None:
+    """Write the single-slider 3D graph viewer with distance diagnostics."""
+
+    if not environments:
+        raise ValueError("Cannot write a viewer for an empty environment list.")
+
+    output_path = Path(html_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    html = _render_html(json.dumps(_payload(environments, max_graphs), allow_nan=True), _plotly_loader(include_plotlyjs))
     _validate_generated_viewer_html(html)
-    html_path.write_text(html, encoding="utf-8")
+    output_path.write_text(html, encoding="utf-8")
