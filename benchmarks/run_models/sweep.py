@@ -14,7 +14,9 @@ import argparse
 import contextlib
 import concurrent.futures
 import pprint
+import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TextIO
@@ -33,8 +35,30 @@ DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 0, 1),
     ("hiphop", 1, 4),
     ("hiphop", 2, 4),
-    ("hiphop", 3, 4)
+    ("hiphop", 3, 4),
 )
+
+DEFAULT_2D_RING_GRAPH_CONFIGS = (
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (2, 1),
+    (2, 2),
+    (2, 3),
+    (2, 4),
+    (3, 2),
+    (3, 3),
+    (3, 4),
+    (4, 3),
+    (4, 4),
+    (5, 5),
+)
+DEFAULT_3D_RING_GRAPH_CONFIGS = (
+    (3, 3),
+    (4, 4),
+)
+RING_GRAPH_CONFIG_RE = re.compile(r"^(?P<dimension>[23]d)_(?P<inner>\d+)inner_(?P<outer>\d+)_outer$")
 
 # DEFAULT_MODEL_CONFIGS = (
 #     ("hiphop", 0, 1),
@@ -44,6 +68,15 @@ DEFAULT_MODEL_CONFIGS = (
 # )
 DEFAULT_DIST_SOFT_MIN = 1.0
 ROTATING_RING_DIST_SOFT_MIN = 0.5
+
+
+@dataclass(frozen=True)
+class RingGraphConfig:
+    name: str
+    n_inner: int
+    n_outer: int
+    outer_3d_rotation_deg: float
+    outer_3d_axis_deg: float
 
 
 def default_dist_soft_min(dataset: str) -> float:
@@ -65,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=["hipnn", "hipnnvec", "hiphop"], default="hiphop")
     parser.add_argument("--neighborhood-cutoff", choices=["cutoff", "edges"], default="cutoff")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 2])
-    parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1, 4])
+    parser.add_argument("--interaction-layers", type=int, nargs="+", default=[1])
     parser.add_argument("--hard-cutoffs", type=float, nargs="+", default=[4.0])
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--n-atom-layers", type=int, default=2)
@@ -101,8 +134,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Run multiple configs and write one log per config. "
-            "Use 'default' for hipnn plus the standard HIP-HOP l/n configs, "
+            "Use 'default' or 'all' for the standard HIP-HOP l/n configs, "
             "or values like 'hipnn', 'l2_n3', or 'hiphop:2:3'."
+        ),
+    )
+    parser.add_argument(
+        "--ring-graph-configs",
+        nargs="+",
+        default=None,
+        help=(
+            "Rotating-ring graph versions to sweep. Use 'all_2d', 'all_3d', or 'all', "
+            "or explicit values like '2d_3inner_4_outer', '3d_4inner_4_outer', or '2d:3:4'. "
+            "When --output-dir already contains matching graph-version folders, all_* discovers them."
         ),
     )
     parser.add_argument(
@@ -126,12 +169,12 @@ def parse_args() -> argparse.Namespace:
 def parse_model_configs(configs: list[str] | None) -> list[tuple[str, int, int]]:
     if configs is None:
         return []
-    if configs == ["default"]:
+    if configs in (["default"], ["all"]):
         return list(DEFAULT_MODEL_CONFIGS)
 
     parsed = []
     for config in configs:
-        if config == "default":
+        if config in {"default", "all"}:
             parsed.extend(DEFAULT_MODEL_CONFIGS)
         elif config == "hipnn":
             parsed.append(("hipnn", 0, 1))
@@ -143,10 +186,107 @@ def parse_model_configs(configs: list[str] | None) -> list[tuple[str, int, int]]
             parsed.append(("hiphop", int(l_text), int(n_text)))
         else:
             raise ValueError(
-                f"Unknown model config {config!r}. Use 'default', 'hipnn', 'l2_n3', or 'hiphop:2:3'."
+                f"Unknown model config {config!r}. Use 'default', 'all', 'hipnn', 'l2_n3', or 'hiphop:2:3'."
             )
 
     return parsed
+
+
+def ring_graph_config_name(dimension: str, n_inner: int, n_outer: int) -> str:
+    return f"{dimension}_{n_inner}inner_{n_outer}_outer"
+
+
+def make_ring_graph_config(dimension: str, n_inner: int, n_outer: int) -> RingGraphConfig:
+    if dimension not in {"2d", "3d"}:
+        raise ValueError(f"Unknown rotating-ring graph dimension {dimension!r}. Expected '2d' or '3d'.")
+
+    outer_3d_rotation_deg = 360.0 if dimension == "3d" else 0.0
+    outer_3d_axis_deg = 360.0 if dimension == "3d" else 0.0
+    return RingGraphConfig(
+        name=ring_graph_config_name(dimension, n_inner, n_outer),
+        n_inner=n_inner,
+        n_outer=n_outer,
+        outer_3d_rotation_deg=outer_3d_rotation_deg,
+        outer_3d_axis_deg=outer_3d_axis_deg,
+    )
+
+
+def discover_ring_graph_configs(output_dir: Path | None, dimension: str | None) -> list[RingGraphConfig]:
+    if output_dir is None or not output_dir.exists():
+        return []
+
+    configs = []
+    for child in output_dir.iterdir():
+        if not child.is_dir():
+            continue
+        match = RING_GRAPH_CONFIG_RE.match(child.name)
+        if not match:
+            continue
+        child_dimension = match.group("dimension")
+        if dimension is not None and child_dimension != dimension:
+            continue
+        configs.append(
+            make_ring_graph_config(
+                child_dimension,
+                int(match.group("inner")),
+                int(match.group("outer")),
+            )
+        )
+
+    return sorted(configs, key=lambda config: (config.name.startswith("3d_"), config.n_inner, config.n_outer))
+
+
+def default_ring_graph_configs(dimension: str | None) -> list[RingGraphConfig]:
+    configs = []
+    if dimension in {None, "2d"}:
+        configs.extend(make_ring_graph_config("2d", n_inner, n_outer) for n_inner, n_outer in DEFAULT_2D_RING_GRAPH_CONFIGS)
+    if dimension in {None, "3d"}:
+        configs.extend(make_ring_graph_config("3d", n_inner, n_outer) for n_inner, n_outer in DEFAULT_3D_RING_GRAPH_CONFIGS)
+    return configs
+
+
+def parse_ring_graph_configs(configs: list[str] | None, output_dir: Path | None) -> list[RingGraphConfig]:
+    if configs is None:
+        return []
+
+    parsed = []
+    for config in configs:
+        normalized = config.lower().replace("-", "_")
+        if normalized in {"all", "all_2d", "2d", "all_3d", "3d"}:
+            dimension = None if normalized == "all" else normalized.removeprefix("all_")
+            discovered = discover_ring_graph_configs(output_dir, dimension)
+            parsed.extend(discovered or default_ring_graph_configs(dimension))
+            continue
+
+        match = RING_GRAPH_CONFIG_RE.match(normalized)
+        if match:
+            parsed.append(
+                make_ring_graph_config(
+                    match.group("dimension"),
+                    int(match.group("inner")),
+                    int(match.group("outer")),
+                )
+            )
+            continue
+
+        parts = normalized.split(":")
+        if len(parts) == 3 and parts[0] in {"2d", "3d"}:
+            parsed.append(make_ring_graph_config(parts[0], int(parts[1]), int(parts[2])))
+            continue
+
+        raise ValueError(
+            f"Unknown rotating-ring graph config {config!r}. "
+            "Use 'all_2d', 'all_3d', 'all', '2d_3inner_4_outer', or '2d:3:4'."
+        )
+
+    deduped = []
+    seen = set()
+    for config in parsed:
+        if config.name in seen:
+            continue
+        seen.add(config.name)
+        deduped.append(config)
+    return deduped
 
 
 def config_log_name(model: str, l_max: int, n_max: int) -> str:
@@ -160,6 +300,17 @@ def args_for_config(args: argparse.Namespace, model: str, l_max: int, n_max: int
     config_args.model = model
     config_args.l_max = l_max
     config_args.n_max = n_max
+    return config_args
+
+
+def args_for_ring_graph_config(args: argparse.Namespace, graph_config: RingGraphConfig, output_dir: Path | None = None) -> argparse.Namespace:
+    config_args = argparse.Namespace(**vars(args))
+    config_args.ring_n_inner = graph_config.n_inner
+    config_args.ring_n_outer = graph_config.n_outer
+    config_args.ring_outer_3d_rotation_deg = graph_config.outer_3d_rotation_deg
+    config_args.ring_outer_3d_axis_deg = graph_config.outer_3d_axis_deg
+    if output_dir is not None:
+        config_args.output_dir = output_dir
     return config_args
 
 
@@ -314,15 +465,30 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
     if args.output_dir is None:
         raise ValueError("--output-dir is required with --model-configs.")
 
+    graph_configs = parse_ring_graph_configs(args.ring_graph_configs, args.output_dir)
+    if graph_configs and args.dataset != "rotating_ring":
+        raise ValueError("--ring-graph-configs can only be used with --dataset rotating_ring.")
+
+    config_jobs = []
+    if graph_configs:
+        for graph_config in graph_configs:
+            graph_output_dir = args.output_dir / graph_config.name
+            graph_args = args_for_ring_graph_config(args, graph_config, graph_output_dir)
+            for model, l_max, n_max in configs:
+                config_jobs.append((graph_args, model, l_max, n_max, graph_output_dir))
+    else:
+        for model, l_max, n_max in configs:
+            config_jobs.append((args, model, l_max, n_max, args.output_dir))
+
     max_workers = args.parallel_configs or len(configs)
     if max_workers < 1:
         raise ValueError("--parallel-configs must be at least 1.")
 
-    print(f"Running {len(configs)} model configs with {max_workers} parallel workers.", flush=True)
+    print(f"Running {len(config_jobs)} sweep jobs with {max_workers} parallel workers.", flush=True)
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(run_config_to_file, args, model, l_max, n_max, args.output_dir)
-            for model, l_max, n_max in configs
+            executor.submit(run_config_to_file, job_args, model, l_max, n_max, output_dir)
+            for job_args, model, l_max, n_max, output_dir in config_jobs
         ]
         for future in concurrent.futures.as_completed(futures):
             output_file = future.result()
@@ -331,6 +497,8 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = normalize_args(parse_args())
+    if args.ring_graph_configs is not None and args.output_dir is None:
+        raise ValueError("--output-dir is required with --ring-graph-configs.")
     if args.model_configs is not None:
         run_model_config_batch(args)
         return
