@@ -14,9 +14,8 @@ import argparse
 import contextlib
 import concurrent.futures
 import pprint
-import re
 import sys
-from dataclasses import dataclass
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TextIO
@@ -28,55 +27,27 @@ if str(BENCHMARKS_ROOT) not in sys.path:
 import torch
 
 from incompleteness.generate_data.incompleteness import COUNTEREXAMPLE_NAMES
+from run_models.sweep_configs import (
+    args_for_config,
+    args_for_ring_graph_config,
+    config_log_name,
+    parse_model_configs,
+    parse_ring_graph_configs,
+)
+from run_models.sweep_results import (
+    config_dict,
+    config_result_name,
+    json_results_dir,
+    make_run_result_record,
+    make_sweep_result_record,
+    sweep_dataset_items,
+    write_json_index,
+    write_result_json,
+)
 from run_models.train import train
 
-# Specify model type, max_l, max_n
-DEFAULT_MODEL_CONFIGS = (
-    ("hiphop", 0, 1),
-    ("hiphop", 1, 4),
-    ("hiphop", 2, 4),
-    ("hiphop", 3, 4),
-)
-
-DEFAULT_2D_RING_GRAPH_CONFIGS = (
-    (1, 1),
-    (1, 2),
-    (1, 3),
-    (1, 4),
-    (2, 1),
-    (2, 2),
-    (2, 3),
-    (2, 4),
-    (3, 2),
-    (3, 3),
-    (3, 4),
-    (4, 3),
-    (4, 4),
-    (5, 5),
-)
-DEFAULT_3D_RING_GRAPH_CONFIGS = (
-    (3, 3),
-    (4, 4),
-)
-RING_GRAPH_CONFIG_RE = re.compile(r"^(?P<dimension>[23]d)_(?P<inner>\d+)inner_(?P<outer>\d+)_outer$")
-
-# DEFAULT_MODEL_CONFIGS = (
-#     ("hiphop", 0, 1),
-#     ("hiphop", 1, 4),
-#     ("hiphop", 2, 4),
-#     ("hiphop", 3, 4)
-# )
 DEFAULT_DIST_SOFT_MIN = 1.0
 ROTATING_RING_DIST_SOFT_MIN = 0.5
-
-
-@dataclass(frozen=True)
-class RingGraphConfig:
-    name: str
-    n_inner: int
-    n_outer: int
-    outer_3d_rotation_deg: float
-    outer_3d_axis_deg: float
 
 
 def default_dist_soft_min(dataset: str) -> float:
@@ -112,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--l-max", type=int, default=2)
     parser.add_argument("--n-max", type=int, default=3)
-    parser.add_argument("--ring-n-graphs", type=int, default=100, help="Number of rotating-ring graphs to generate.")
+    parser.add_argument("--ring-n-graphs", type=int, default=10, help="Number of rotating-ring graphs to generate.")
     parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
     parser.add_argument("--ring-n-inner", type=int, default=3, help="Number of rotating-ring inner nodes.")
     parser.add_argument("--ring-n-outer", type=int, default=3, help="Number of rotating-ring outer nodes.")
@@ -155,6 +126,16 @@ def parse_args() -> argparse.Namespace:
         help="Directory for per-config markdown logs when --model-configs is used.",
     )
     parser.add_argument(
+        "--results-json-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for machine-readable JSON result files. "
+            "Defaults to <output-dir>/json_results when --output-dir is set, "
+            "or sweep_json_results for a direct stdout sweep."
+        ),
+    )
+    parser.add_argument(
         "--parallel-configs",
         type=int,
         default=None,
@@ -164,161 +145,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=250)
     parser.add_argument("--no-progress", action="store_true", help="Hide per-run progress messages.")
     return parser.parse_args()
-
-
-def parse_model_configs(configs: list[str] | None) -> list[tuple[str, int, int]]:
-    if configs is None:
-        return []
-    if configs in (["default"], ["all"]):
-        return list(DEFAULT_MODEL_CONFIGS)
-
-    parsed = []
-    for config in configs:
-        if config in {"default", "all"}:
-            parsed.extend(DEFAULT_MODEL_CONFIGS)
-        elif config == "hipnn":
-            parsed.append(("hipnn", 0, 1))
-        elif config.startswith("l") and "_n" in config:
-            l_text, n_text = config.removeprefix("l").split("_n", maxsplit=1)
-            parsed.append(("hiphop", int(l_text), int(n_text)))
-        elif config.startswith("hiphop:"):
-            _model, l_text, n_text = config.split(":", maxsplit=2)
-            parsed.append(("hiphop", int(l_text), int(n_text)))
-        else:
-            raise ValueError(
-                f"Unknown model config {config!r}. Use 'default', 'all', 'hipnn', 'l2_n3', or 'hiphop:2:3'."
-            )
-
-    return parsed
-
-
-def ring_graph_config_name(dimension: str, n_inner: int, n_outer: int) -> str:
-    return f"{dimension}_{n_inner}inner_{n_outer}_outer"
-
-
-def make_ring_graph_config(dimension: str, n_inner: int, n_outer: int) -> RingGraphConfig:
-    if dimension not in {"2d", "3d"}:
-        raise ValueError(f"Unknown rotating-ring graph dimension {dimension!r}. Expected '2d' or '3d'.")
-
-    outer_3d_rotation_deg = 360.0 if dimension == "3d" else 0.0
-    outer_3d_axis_deg = 360.0 if dimension == "3d" else 0.0
-    return RingGraphConfig(
-        name=ring_graph_config_name(dimension, n_inner, n_outer),
-        n_inner=n_inner,
-        n_outer=n_outer,
-        outer_3d_rotation_deg=outer_3d_rotation_deg,
-        outer_3d_axis_deg=outer_3d_axis_deg,
-    )
-
-
-def discover_ring_graph_configs(output_dir: Path | None, dimension: str | None) -> list[RingGraphConfig]:
-    if output_dir is None or not output_dir.exists():
-        return []
-
-    configs = []
-    for child in output_dir.iterdir():
-        if not child.is_dir():
-            continue
-        match = RING_GRAPH_CONFIG_RE.match(child.name)
-        if not match:
-            continue
-        child_dimension = match.group("dimension")
-        if dimension is not None and child_dimension != dimension:
-            continue
-        configs.append(
-            make_ring_graph_config(
-                child_dimension,
-                int(match.group("inner")),
-                int(match.group("outer")),
-            )
-        )
-
-    return sorted(configs, key=lambda config: (config.name.startswith("3d_"), config.n_inner, config.n_outer))
-
-
-def default_ring_graph_configs(dimension: str | None) -> list[RingGraphConfig]:
-    configs = []
-    if dimension in {None, "2d"}:
-        configs.extend(make_ring_graph_config("2d", n_inner, n_outer) for n_inner, n_outer in DEFAULT_2D_RING_GRAPH_CONFIGS)
-    if dimension in {None, "3d"}:
-        configs.extend(make_ring_graph_config("3d", n_inner, n_outer) for n_inner, n_outer in DEFAULT_3D_RING_GRAPH_CONFIGS)
-    return configs
-
-
-def parse_ring_graph_configs(configs: list[str] | None, output_dir: Path | None) -> list[RingGraphConfig]:
-    if configs is None:
-        return []
-
-    parsed = []
-    for config in configs:
-        normalized = config.lower().replace("-", "_")
-        if normalized in {"all", "all_2d", "2d", "all_3d", "3d"}:
-            dimension = None if normalized == "all" else normalized.removeprefix("all_")
-            discovered = discover_ring_graph_configs(output_dir, dimension)
-            parsed.extend(discovered or default_ring_graph_configs(dimension))
-            continue
-
-        match = RING_GRAPH_CONFIG_RE.match(normalized)
-        if match:
-            parsed.append(
-                make_ring_graph_config(
-                    match.group("dimension"),
-                    int(match.group("inner")),
-                    int(match.group("outer")),
-                )
-            )
-            continue
-
-        parts = normalized.split(":")
-        if len(parts) == 3 and parts[0] in {"2d", "3d"}:
-            parsed.append(make_ring_graph_config(parts[0], int(parts[1]), int(parts[2])))
-            continue
-
-        raise ValueError(
-            f"Unknown rotating-ring graph config {config!r}. "
-            "Use 'all_2d', 'all_3d', 'all', '2d_3inner_4_outer', or '2d:3:4'."
-        )
-
-    deduped = []
-    seen = set()
-    for config in parsed:
-        if config.name in seen:
-            continue
-        seen.add(config.name)
-        deduped.append(config)
-    return deduped
-
-
-def config_log_name(model: str, l_max: int, n_max: int) -> str:
-    if model == "hipnn":
-        return "l0_n1.md"
-    return f"l{l_max}_n{n_max}.md"
-
-
-def args_for_config(args: argparse.Namespace, model: str, l_max: int, n_max: int) -> argparse.Namespace:
-    config_args = argparse.Namespace(**vars(args))
-    config_args.model = model
-    config_args.l_max = l_max
-    config_args.n_max = n_max
-    return config_args
-
-
-def args_for_ring_graph_config(args: argparse.Namespace, graph_config: RingGraphConfig, output_dir: Path | None = None) -> argparse.Namespace:
-    config_args = argparse.Namespace(**vars(args))
-    config_args.ring_n_inner = graph_config.n_inner
-    config_args.ring_n_outer = graph_config.n_outer
-    config_args.ring_outer_3d_rotation_deg = graph_config.outer_3d_rotation_deg
-    config_args.ring_outer_3d_axis_deg = graph_config.outer_3d_axis_deg
-    if output_dir is not None:
-        config_args.output_dir = output_dir
-    return config_args
-
-
-def config_dict(args: argparse.Namespace) -> dict[str, object]:
-    config = vars(args).copy()
-    if isinstance(config.get("output_dir"), Path):
-        config["output_dir"] = str(config["output_dir"])
-    return config
 
 
 def format_result_logits(args: argparse.Namespace, results: list[dict[str, object]]) -> object:
@@ -353,14 +179,10 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
     normalize_args(args)
     torch.set_num_threads(1)
 
-    if args.dataset == "k_chain":
-        dataset_items = args.k
-    elif args.dataset == "incompleteness":
-        dataset_items = args.counterexamples
-    else:
-        dataset_items = ["rotating_ring"]
+    dataset_items = sweep_dataset_items(args)
     total_runs = len(dataset_items) * len(args.hard_cutoffs) * len(args.interaction_layers) * len(args.seeds)
     run_index = 0
+    run_records: list[dict[str, object]] = []
 
     print("Config:", flush=True, file=output)
     print(pprint.pformat(config_dict(args), sort_dicts=True), flush=True, file=output)
@@ -433,7 +255,22 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         stop_at_accuracy=1.0,
                         success_margin=args.success_margin,
                     )
-                    results.append(train(train_args))
+                    start_time = time.perf_counter()
+                    result = train(train_args)
+                    train_time = time.perf_counter() - start_time
+                    results.append(result)
+                    run_records.append(
+                        make_run_result_record(
+                            args,
+                            dataset_item,
+                            hard_cutoff,
+                            n_layers,
+                            seed,
+                            dist_soft_max,
+                            result,
+                            train_time,
+                        )
+                    )
 
                 successes = sum(result["margin_accuracy"] >= 1.0 for result in results)
                 accuracies = [round(result["accuracy"], 3) for result in results]
@@ -446,6 +283,10 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                     flush=True,
                     file=output,
                 )
+
+    result_path = json_results_dir(args) / config_result_name(args.model, args.l_max, args.n_max)
+    write_result_json(result_path, make_sweep_result_record(args, run_records))
+    print(f"Saved sweep JSON: {result_path}", flush=True, file=output)
 
 
 def run_config_to_file(args: argparse.Namespace, model: str, l_max: int, n_max: int, output_dir: Path) -> Path:
@@ -471,9 +312,11 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
 
     config_jobs = []
     if graph_configs:
+        base_json_dir = json_results_dir(args)
         for graph_config in graph_configs:
             graph_output_dir = args.output_dir / graph_config.name
             graph_args = args_for_ring_graph_config(args, graph_config, graph_output_dir)
+            graph_args.results_json_dir = base_json_dir / graph_config.name
             for model, l_max, n_max in configs:
                 config_jobs.append((graph_args, model, l_max, n_max, graph_output_dir))
     else:
@@ -493,6 +336,9 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
         for future in concurrent.futures.as_completed(futures):
             output_file = future.result()
             print(f"Saved sweep log: {output_file}", flush=True)
+
+    write_json_index(json_results_dir(args))
+    print(f"Saved sweep JSON index: {json_results_dir(args) / 'index.json'}", flush=True)
 
 
 def main() -> None:

@@ -13,6 +13,7 @@ build/
 **/__pycache__/
 **/*.png
 **/results/**/*.md
+**/results/**/*.json
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
 benchmarks/incompleteness/generate_data/*.html
