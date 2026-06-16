@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--l-max", type=int, default=2)
     parser.add_argument("--n-max", type=int, default=3)
-    parser.add_argument("--ring-n-graphs", type=int, default=10, help="Number of rotating-ring graphs to generate.")
+    parser.add_argument("--ring-n-graphs", type=int, default=2, help="Number of rotating-ring graphs to generate.")
     parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
     parser.add_argument("--ring-n-inner", type=int, default=3, help="Number of rotating-ring inner nodes.")
     parser.add_argument("--ring-n-outer", type=int, default=3, help="Number of rotating-ring outer nodes.")
