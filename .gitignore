@@ -15,4 +15,4 @@ build/
 **/results/**/*.md
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
-benchmarks/incompleteness/generate_data/*.html
+*.html
