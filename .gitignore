@@ -16,8 +16,4 @@ build/
 **/results/**/*.json
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
-benchmarks/incompleteness/generate_data/*.html
-
-*/visualizations/*.html
-
-benchmarks/rotating_ring/generate_data/visualizations/*
+*.html
