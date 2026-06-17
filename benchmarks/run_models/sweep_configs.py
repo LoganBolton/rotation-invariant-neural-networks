@@ -14,6 +14,8 @@ DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 2, 4),
     ("hiphop", 3, 4),
 )
+
+# num inner nodes, num outer nodes
 DEFAULT_2D_RING_GRAPH_CONFIGS = (
     (1, 1),
     (1, 2),
