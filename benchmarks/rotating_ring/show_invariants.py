@@ -47,6 +47,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dist-hard-max", type=float, default=6.5)
     parser.add_argument("--success-margin", type=float, default=0.1)
     parser.add_argument("--stop-at-accuracy", type=float, default=1.0)
+    parser.add_argument(
+        "--no-channel-average",
+        action="store_true",
+        help=(
+            "Also write per-feature-channel invariant class deltas instead of only "
+            "the feature-averaged center-node summary."
+        ),
+    )
+    parser.add_argument(
+        "--invariant-axis-contractions",
+        action="store_true",
+        help="Label invariant plot axes by the tensor contraction for each invariant column.",
+    )
     return parser.parse_args()
 
 
@@ -137,12 +150,73 @@ def capture_invariants(model: torch.nn.Module, forward_args: tuple[torch.Tensor,
     return captures
 
 
+CONTRACTION_LABELS = {
+    0: r"$s$",
+    1: r"$v_i v_i$",
+    2: r"$q_{ij}q_{ij}$",
+    3: r"$q_{ij}q_{jk}q_{ki}$",
+    4: r"$t_{ijk}t_{ijk}$",
+    5: r"$(t_{ikl}t_{jkl})(t_{imn}t_{jmn})$",
+    6: r"$q_{ij}v_i v_j$",
+    7: r"$(q_{ij}v_j)(q_{ik}v_k)$",
+    8: r"$t_{ijk}v_i v_j v_k$",
+    9: r"$(t_{ikl}t_{jkl})v_i v_j$",
+    10: r"$(t_{ikl}t_{jkl})q_{ij}$",
+    11: r"$(t_{ikl}t_{jkl})(q_{im}q_{jm})$",
+    12: r"$(t_{ijk}q_{jk})(t_{ilm}q_{lm})$",
+}
+
+
+def active_invariant_ids(l_max: int, n_max: int) -> list[int]:
+    invariant_ids = [0]
+    if l_max >= 1 and n_max >= 2:
+        invariant_ids.append(1)
+    if l_max >= 2:
+        if n_max >= 2:
+            invariant_ids.append(2)
+        if n_max >= 3:
+            invariant_ids.extend([3, 6])
+        if n_max >= 4:
+            invariant_ids.append(7)
+    if l_max >= 3:
+        if n_max >= 2:
+            invariant_ids.append(4)
+        if n_max >= 3:
+            invariant_ids.append(10)
+        if n_max >= 4:
+            invariant_ids.extend([5, 8, 9, 11, 12])
+    return sorted(invariant_ids)
+
+
+def invariant_axis_labels(l_max: int, n_max: int, n_invariants: int, *, use_contractions: bool) -> list[str]:
+    if not use_contractions:
+        return [f"I{i}" for i in range(n_invariants)]
+
+    invariant_ids = active_invariant_ids(l_max, n_max)
+    if len(invariant_ids) != n_invariants:
+        return [f"I{i}" for i in range(n_invariants)]
+    return [CONTRACTION_LABELS[invariant_id] for invariant_id in invariant_ids]
+
+
+def set_invariant_xticks(axis: plt.Axes, invariant_labels: list[str], *, rotation: float = 0.0) -> None:
+    axis.set_xticks(torch.arange(len(invariant_labels)))
+    axis.set_xticklabels(invariant_labels, rotation=rotation, ha="right" if rotation else "center")
+
+
 def summarize_capture(
     capture: torch.Tensor,
     *,
     node_counts: torch.Tensor,
     labels: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     n_atoms = int(node_counts.sum().item())
     if capture.shape[0] % n_atoms != 0:
         raise ValueError(f"Cannot reshape capture with shape {tuple(capture.shape)} over {n_atoms} atoms.")
@@ -165,7 +239,15 @@ def summarize_capture(
     feature_pooled_std = torch.sqrt((feature_class_stds[0].pow(2) + feature_class_stds[1].pow(2)) / 2.0).clamp_min(1.0e-12)
     feature_standardized_delta = (feature_class_means[1] - feature_class_means[0]) / feature_pooled_std
 
-    return center_by_graph, class_means, class_stds, standardized_delta, feature_standardized_delta
+    return (
+        center_by_graph,
+        class_means,
+        class_stds,
+        standardized_delta,
+        feature_class_means,
+        feature_class_stds,
+        feature_standardized_delta,
+    )
 
 
 def write_summary_csv(path: Path, class_means: torch.Tensor, class_stds: torch.Tensor, standardized_delta: torch.Tensor) -> None:
@@ -218,9 +300,16 @@ def write_center_values_csv(path: Path, values: torch.Tensor, labels: torch.Tens
                 )
 
 
-def plot_invariants(path: Path, values: torch.Tensor, labels: torch.Tensor, standardized_delta: torch.Tensor, title: str) -> None:
+def plot_invariants(
+    path: Path,
+    values: torch.Tensor,
+    labels: torch.Tensor,
+    standardized_delta: torch.Tensor,
+    title: str,
+    invariant_labels: list[str],
+) -> None:
     n_invariants = values.shape[1]
-    fig, axes = plt.subplots(2, 1, figsize=(max(9.0, n_invariants * 0.7), 7.5), constrained_layout=True)
+    fig, axes = plt.subplots(2, 1, figsize=(max(9.0, n_invariants * 1.0), 7.5), constrained_layout=True)
 
     x = torch.arange(n_invariants)
     for label, color, marker in [(0, "#145f7a", "o"), (1, "#f47c20", "s")]:
@@ -230,19 +319,19 @@ def plot_invariants(path: Path, values: torch.Tensor, labels: torch.Tensor, stan
         axes[0].errorbar(x, mean, yerr=std, fmt=marker + "-", color=color, capsize=3, label=f"class {label}")
 
     axes[0].set_title(title)
-    axes[0].set_xlabel("invariant index")
+    axes[0].set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axes[0].set_ylabel("center-node mean over feature channels")
     axes[0].legend()
     axes[0].grid(True, alpha=0.25)
 
     axes[1].bar(x, standardized_delta, color=["#145f7a" if v < 0 else "#f47c20" for v in standardized_delta.tolist()])
     axes[1].axhline(0.0, color="black", linewidth=0.8)
-    axes[1].set_xlabel("invariant index")
+    axes[1].set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axes[1].set_ylabel("standardized class delta")
     axes[1].grid(True, axis="y", alpha=0.25)
 
     for axis in axes:
-        axis.set_xticks(x)
+        set_invariant_xticks(axis, invariant_labels, rotation=30.0 if invariant_labels[0].startswith("$") else 0.0)
 
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -263,9 +352,62 @@ def write_feature_delta_csv(path: Path, feature_standardized_delta: torch.Tensor
                 )
 
 
-def plot_feature_delta_heatmap(path: Path, feature_standardized_delta: torch.Tensor, title: str) -> None:
+def write_channel_summary_csv(
+    path: Path,
+    feature_class_means: torch.Tensor,
+    feature_class_stds: torch.Tensor,
+    feature_standardized_delta: torch.Tensor,
+) -> None:
+    raw_delta = feature_class_means[1] - feature_class_means[0]
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "feature_index",
+                "invariant_index",
+                "class0_center_mean",
+                "class0_center_std",
+                "class0_center_variance",
+                "class1_center_mean",
+                "class1_center_std",
+                "class1_center_variance",
+                "class1_minus_class0",
+                "abs_class1_minus_class0",
+                "standardized_delta",
+                "abs_standardized_delta",
+            ]
+        )
+        for feature_index in range(feature_class_means.shape[1]):
+            for invariant_index in range(feature_class_means.shape[2]):
+                diff = raw_delta[feature_index, invariant_index]
+                standardized = feature_standardized_delta[feature_index, invariant_index]
+                writer.writerow(
+                    [
+                        feature_index,
+                        invariant_index,
+                        f"{float(feature_class_means[0, feature_index, invariant_index]):.8g}",
+                        f"{float(feature_class_stds[0, feature_index, invariant_index]):.8g}",
+                        f"{float(feature_class_stds[0, feature_index, invariant_index].pow(2)):.8g}",
+                        f"{float(feature_class_means[1, feature_index, invariant_index]):.8g}",
+                        f"{float(feature_class_stds[1, feature_index, invariant_index]):.8g}",
+                        f"{float(feature_class_stds[1, feature_index, invariant_index].pow(2)):.8g}",
+                        f"{float(diff):.8g}",
+                        f"{float(diff.abs()):.8g}",
+                        f"{float(standardized):.8g}",
+                        f"{float(standardized.abs()):.8g}",
+                    ]
+                )
+
+
+def plot_feature_delta_heatmap(
+    path: Path,
+    feature_standardized_delta: torch.Tensor,
+    title: str,
+    invariant_labels: list[str],
+) -> None:
     vmax = max(1.0, float(feature_standardized_delta.abs().max().item()))
-    fig, axis = plt.subplots(figsize=(10.0, max(4.0, feature_standardized_delta.shape[0] * 0.33)), constrained_layout=True)
+    fig_width = max(10.0, feature_standardized_delta.shape[1] * (1.25 if invariant_labels[0].startswith("$") else 0.75))
+    fig, axis = plt.subplots(figsize=(fig_width, max(4.0, feature_standardized_delta.shape[0] * 0.33)), constrained_layout=True)
     image = axis.imshow(
         feature_standardized_delta,
         aspect="auto",
@@ -275,12 +417,59 @@ def plot_feature_delta_heatmap(path: Path, feature_standardized_delta: torch.Ten
         interpolation="nearest",
     )
     axis.set_title(title)
-    axis.set_xlabel("invariant index")
+    axis.set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axis.set_ylabel("feature channel")
-    axis.set_xticks(torch.arange(feature_standardized_delta.shape[1]))
+    set_invariant_xticks(axis, invariant_labels, rotation=35.0 if invariant_labels[0].startswith("$") else 0.0)
     axis.set_yticks(torch.arange(feature_standardized_delta.shape[0]))
     colorbar = fig.colorbar(image, ax=axis)
     colorbar.set_label("standardized class delta")
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_channel_delta_magnitude_heatmap(
+    path: Path,
+    feature_standardized_delta: torch.Tensor,
+    title: str,
+    invariant_labels: list[str],
+) -> None:
+    delta_magnitude = feature_standardized_delta.abs()
+    vmax = max(1.0, float(torch.quantile(delta_magnitude.reshape(-1), 0.98).item()))
+    fig_width = max(9.0, feature_standardized_delta.shape[1] * (1.25 if invariant_labels[0].startswith("$") else 0.75))
+    fig_height = max(4.0, feature_standardized_delta.shape[0] * 0.36)
+    fig, axis = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
+    image = axis.imshow(
+        delta_magnitude,
+        aspect="auto",
+        cmap="magma",
+        vmin=0.0,
+        vmax=vmax,
+        interpolation="nearest",
+    )
+    axis.set_title(title)
+    axis.set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index k")
+    axis.set_ylabel("feature channel a")
+    set_invariant_xticks(axis, invariant_labels, rotation=35.0 if invariant_labels[0].startswith("$") else 0.0)
+    axis.set_yticks(torch.arange(feature_standardized_delta.shape[0]))
+    axis.set_yticklabels([f"a = {i}" for i in range(feature_standardized_delta.shape[0])])
+    colorbar = fig.colorbar(image, ax=axis)
+    colorbar.set_label("|standardized class delta|")
+
+    for feature_index in range(feature_standardized_delta.shape[0]):
+        for invariant_index in range(feature_standardized_delta.shape[1]):
+            signed_value = float(feature_standardized_delta[feature_index, invariant_index])
+            if abs(signed_value) >= 1.0:
+                text_color = "white" if abs(signed_value) > 0.65 * vmax else "black"
+                axis.text(
+                    invariant_index,
+                    feature_index,
+                    f"{signed_value:+.1f}",
+                    ha="center",
+                    va="center",
+                    color=text_color,
+                    fontsize=7,
+                )
+
     fig.savefig(path, dpi=180)
     plt.close(fig)
 
@@ -315,10 +504,24 @@ def main() -> None:
     ]
 
     for layer_index, (name, capture) in enumerate(captures.items()):
-        values, class_means, class_stds, standardized_delta, feature_standardized_delta = summarize_capture(
+        (
+            values,
+            class_means,
+            class_stds,
+            standardized_delta,
+            feature_class_means,
+            feature_class_stds,
+            feature_standardized_delta,
+        ) = summarize_capture(
             capture,
             node_counts=arrays["node_counts"].cpu(),
             labels=labels.cpu(),
+        )
+        invariant_labels = invariant_axis_labels(
+            args.l_max,
+            args.n_max,
+            values.shape[1],
+            use_contractions=args.invariant_axis_contractions,
         )
         safe_name = f"layer{layer_index}"
         csv_path = args.output_dir / f"{safe_name}_center_invariants.csv"
@@ -326,6 +529,8 @@ def main() -> None:
         png_path = args.output_dir / f"{safe_name}_center_invariants.png"
         feature_csv_path = args.output_dir / f"{safe_name}_feature_invariant_deltas.csv"
         feature_png_path = args.output_dir / f"{safe_name}_feature_invariant_deltas.png"
+        channel_csv_path = args.output_dir / f"{safe_name}_channel_invariant_class_deltas.csv"
+        channel_png_path = args.output_dir / f"{safe_name}_channel_invariant_delta_magnitude.png"
         write_summary_csv(csv_path, class_means, class_stds, standardized_delta)
         write_center_values_csv(values_csv_path, values, labels.cpu())
         write_feature_delta_csv(feature_csv_path, feature_standardized_delta)
@@ -335,12 +540,27 @@ def main() -> None:
             labels.cpu(),
             standardized_delta,
             f"{safe_name}: center-node HIP-HOP invariants by class",
+            invariant_labels,
         )
         plot_feature_delta_heatmap(
             feature_png_path,
             feature_standardized_delta,
             f"{safe_name}: center-node feature x invariant class deltas",
+            invariant_labels,
         )
+        if args.no_channel_average:
+            write_channel_summary_csv(
+                channel_csv_path,
+                feature_class_means,
+                feature_class_stds,
+                feature_standardized_delta,
+            )
+            plot_channel_delta_magnitude_heatmap(
+                channel_png_path,
+                feature_standardized_delta,
+                f"{safe_name}: per-channel center-node invariant class-delta magnitude",
+                invariant_labels,
+            )
 
         top = torch.argsort(standardized_delta.abs(), descending=True)[: min(5, standardized_delta.numel())]
         top_text = ", ".join(f"I{int(i)}={float(standardized_delta[i]):+.2f}" for i in top)
@@ -353,6 +573,8 @@ def main() -> None:
             feature_top_parts.append(f"F{feature_index}/I{invariant_index}={value:+.2f}")
         summary_lines.append(f"{safe_name}: {name}")
         summary_lines.append(f"  capture_shape: {tuple(capture.shape)}")
+        if args.invariant_axis_contractions:
+            summary_lines.append(f"  invariant_axis_labels: {', '.join(invariant_labels)}")
         summary_lines.append(f"  top standardized deltas: {top_text}")
         summary_lines.append(f"  top feature/invariant deltas: {', '.join(feature_top_parts)}")
         summary_lines.append(f"  csv: {csv_path}")
@@ -360,6 +582,9 @@ def main() -> None:
         summary_lines.append(f"  plot: {png_path}")
         summary_lines.append(f"  feature_delta_csv: {feature_csv_path}")
         summary_lines.append(f"  feature_delta_plot: {feature_png_path}")
+        if args.no_channel_average:
+            summary_lines.append(f"  channel_delta_csv: {channel_csv_path}")
+            summary_lines.append(f"  channel_delta_magnitude_plot: {channel_png_path}")
         summary_lines.append("")
 
     summary_path = args.output_dir / "summary.txt"
