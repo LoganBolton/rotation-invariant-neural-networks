@@ -17,3 +17,5 @@ build/
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
 *.html
+
+benchmarks/rotating_ring/results/*

@@ -16,6 +16,24 @@ from matplotlib.colors import to_rgb
 import torch
 
 
+DEFAULT_2D_RING_GRAPH_CONFIGS = (
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (2, 1),
+    (2, 2),
+    (2, 3),
+    (2, 4),
+    (3, 1),
+    (3, 2),
+    (3, 3),
+    (3, 4),
+    (4, 1),
+    (4, 2),
+    (4, 3),
+    (4, 4),
+)
 RUN_DIRS = {
     1: "show_invariants_n1",
     2: "show_invariants_n2",
@@ -41,11 +59,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-features", type=int, default=16)
     parser.add_argument("--n-sensitivities", type=int, default=16)
     parser.add_argument("--write-log-y", action="store_true", help="Also write a symlog-y overlay plot.")
+    parser.add_argument(
+        "--config-grid",
+        action="store_true",
+        help="Read show_invariants_innerX_outerY directories for the default 2D inner/outer config grid.",
+    )
+    parser.add_argument(
+        "--boxplots-by-inner-only",
+        action="store_true",
+        help="For --config-grid, write only four box-plot figures grouped by fixed inner-ring count.",
+    )
+    parser.add_argument(
+        "--class-separation-by-inner-only",
+        action="store_true",
+        help="For --config-grid, write only four class-separation figures grouped by fixed inner-ring count.",
+    )
     return parser.parse_args()
 
 
-def run_label(n_ring: int) -> str:
+def run_label(n_ring: int | tuple[int, int]) -> str:
+    if isinstance(n_ring, tuple):
+        return f"{n_ring[0]} inner / {n_ring[1]} outer"
     return f"{n_ring} inner / {n_ring} outer"
+
+
+def run_sort_key(n_ring: int | tuple[int, int]) -> tuple[int, int]:
+    if isinstance(n_ring, tuple):
+        return n_ring
+    return (n_ring, n_ring)
+
+
+def run_slug(n_ring: int | tuple[int, int]) -> str:
+    if isinstance(n_ring, tuple):
+        return f"inner{n_ring[0]}_outer{n_ring[1]}"
+    return f"n{n_ring}"
+
+
+def color_for(n_ring: int | tuple[int, int]) -> tuple[float, float, float] | str:
+    if n_ring in COLORS:
+        return COLORS[n_ring]
+    inner, outer = run_sort_key(n_ring)
+    palette_index = (inner - 1) * 4 + (outer - 1)
+    return plt.get_cmap("tab20")(palette_index % 20)
 
 
 def read_center_csv(path: Path) -> dict[str, torch.Tensor]:
@@ -110,7 +165,7 @@ def read_summary(path: Path) -> dict[str, str]:
 
 
 def write_overlay_csv(path: Path, centers: dict[int, dict[str, torch.Tensor]], feature_deltas: dict[int, torch.Tensor]) -> None:
-    n_ring_values = sorted(centers)
+    n_ring_values = sorted(centers, key=run_sort_key)
     n_invariants = int(centers[n_ring_values[0]]["index"].numel())
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
@@ -141,8 +196,8 @@ def write_overlay_csv(path: Path, centers: dict[int, dict[str, torch.Tensor]], f
 
 def plot_overlay(
     path: Path,
-    centers: dict[int, dict[str, torch.Tensor]],
-    feature_deltas: dict[int, torch.Tensor],
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    feature_deltas: dict[int | tuple[int, int], torch.Tensor],
     *,
     log_y: bool = False,
 ) -> None:
@@ -151,11 +206,12 @@ def plot_overlay(
 
     for n_ring, data in centers.items():
         x = data["index"]
+        color = color_for(n_ring)
         axes[0].plot(
             x,
             data["class0"],
             marker="o",
-            color=COLORS[n_ring],
+            color=color,
             linestyle="-",
             linewidth=2.1,
             markersize=8.0,
@@ -165,7 +221,7 @@ def plot_overlay(
             x,
             data["class1"],
             marker="s",
-            color=COLORS[n_ring],
+            color=color,
             linestyle="--",
             linewidth=2.1,
             markersize=8.0,
@@ -175,7 +231,7 @@ def plot_overlay(
             x,
             data["delta"],
             marker="o",
-            color=COLORS[n_ring],
+            color=color,
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -184,7 +240,7 @@ def plot_overlay(
             x,
             feature_deltas[n_ring].abs().max(dim=0).values,
             marker="o",
-            color=COLORS[n_ring],
+            color=color,
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -218,22 +274,23 @@ def plot_overlay(
 
 def plot_overlay_with_variance(
     path: Path,
-    centers: dict[int, dict[str, torch.Tensor]],
-    feature_deltas: dict[int, torch.Tensor],
-    center_values: dict[int, dict[tuple[int, int], list[float]]],
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    feature_deltas: dict[int | tuple[int, int], torch.Tensor],
+    center_values: dict[int | tuple[int, int], dict[tuple[int, int], list[float]]],
 ) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
 
-    n_ring_values = sorted(centers)
+    n_ring_values = sorted(centers, key=run_sort_key)
     box_width = 0.09
     offsets = torch.linspace(-0.35, 0.35, len(n_ring_values) * 2)
     offset_index = 0
     for n_ring, data in centers.items():
         x = data["index"].to(torch.float32)
+        color = color_for(n_ring)
         for label, color, marker_label in [
-            (0, COLORS[n_ring], f"{run_label(n_ring)}, class 0"),
-            (1, lighten_color(COLORS[n_ring], amount=0.42), f"{run_label(n_ring)}, class 1"),
+            (0, color, f"{run_label(n_ring)}, class 0"),
+            (1, lighten_color(color, amount=0.42), f"{run_label(n_ring)}, class 1"),
         ]:
             positions = [float(invariant + offsets[offset_index]) for invariant in x]
             box_data = [center_values[n_ring][(label, int(invariant))] for invariant in x]
@@ -261,7 +318,7 @@ def plot_overlay_with_variance(
             x,
             data["delta"],
             marker="o",
-            color=COLORS[n_ring],
+            color=color_for(n_ring),
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -270,7 +327,7 @@ def plot_overlay_with_variance(
             x,
             feature_deltas[n_ring].abs().max(dim=0).values,
             marker="o",
-            color=COLORS[n_ring],
+            color=color_for(n_ring),
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -299,6 +356,101 @@ def plot_overlay_with_variance(
     plt.close(fig)
 
 
+def plot_boxplot_only(
+    path: Path,
+    *,
+    inner: int,
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    center_values: dict[int | tuple[int, int], dict[tuple[int, int], list[float]]],
+) -> None:
+    configs = [config for config in sorted(centers, key=run_sort_key) if run_sort_key(config)[0] == inner]
+    if not configs:
+        raise ValueError(f"No runs found for inner={inner}.")
+
+    n_invariants = int(next(iter(centers.values()))["index"].numel())
+    fig, axis = plt.subplots(figsize=(12, 5.8), constrained_layout=True)
+
+    box_width = 0.08
+    offsets = torch.linspace(-0.36, 0.36, len(configs) * 2)
+    offset_index = 0
+    for config in configs:
+        x = centers[config]["index"].to(torch.float32)
+        base_color = color_for(config)
+        for label, color, marker_label in [
+            (0, base_color, f"{run_label(config)}, class 0"),
+            (1, lighten_color(base_color, amount=0.42), f"{run_label(config)}, class 1"),
+        ]:
+            positions = [float(invariant + offsets[offset_index]) for invariant in x]
+            box_data = [center_values[config][(label, int(invariant))] for invariant in x]
+            box = axis.boxplot(
+                box_data,
+                positions=positions,
+                widths=box_width,
+                patch_artist=True,
+                showfliers=False,
+                manage_ticks=False,
+            )
+            for patch in box["boxes"]:
+                patch.set_facecolor(color)
+                patch.set_alpha(0.38)
+                patch.set_edgecolor(color)
+                patch.set_linewidth(1.5)
+            for key in ("whiskers", "caps", "medians"):
+                for artist in box[key]:
+                    artist.set_color(color)
+                    artist.set_linewidth(1.4)
+            axis.plot([], [], marker="s", linestyle="None", color=color, markersize=7.5, label=marker_label)
+            offset_index += 1
+
+    axis.set_title(f"Center-node invariant distributions: {inner} inner ring node{'s' if inner != 1 else ''}")
+    axis.set_xlabel("invariant index")
+    axis.set_ylabel("center-node mean over feature channels")
+    axis.set_xticks(torch.arange(n_invariants))
+    axis.set_xlim(-0.6, n_invariants - 0.4)
+    axis.grid(True, axis="y", alpha=0.25)
+    axis.legend(ncol=2, fontsize=8)
+
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_class_separation_only(
+    path: Path,
+    *,
+    inner: int,
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+) -> None:
+    configs = [config for config in sorted(centers, key=run_sort_key) if run_sort_key(config)[0] == inner]
+    if not configs:
+        raise ValueError(f"No runs found for inner={inner}.")
+
+    n_invariants = int(next(iter(centers.values()))["index"].numel())
+    fig, axis = plt.subplots(figsize=(8.5, 4.8), constrained_layout=True)
+
+    for config in configs:
+        data = centers[config]
+        axis.plot(
+            data["index"],
+            data["delta"],
+            marker="o",
+            linewidth=2.2,
+            markersize=7.5,
+            color=color_for(config),
+            label=run_label(config),
+        )
+
+    axis.axhline(0.0, color="black", linewidth=0.8)
+    axis.set_title(f"Class separation by invariant: {inner} inner ring node{'s' if inner != 1 else ''}")
+    axis.set_xlabel("invariant index")
+    axis.set_ylabel("standardized class delta")
+    axis.set_xticks(torch.arange(n_invariants))
+    axis.grid(True, alpha=0.25)
+    axis.legend(ncol=2, fontsize=9)
+
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def add_width_line(axis, x: torch.Tensor, y: torch.Tensor, spread: torch.Tensor, *, color: str, linestyle: str, marker: str, label: str) -> None:
     points = torch.stack([x.to(torch.float32), y.to(torch.float32)], dim=1).numpy()
     segments = [[points[i], points[i + 1]] for i in range(len(points) - 1)]
@@ -310,18 +462,23 @@ def add_width_line(axis, x: torch.Tensor, y: torch.Tensor, spread: torch.Tensor,
     axis.plot(x, y, linestyle="None", marker=marker, color=color, markersize=8.0, label=label)
 
 
-def plot_overlay_with_spread_width(path: Path, centers: dict[int, dict[str, torch.Tensor]], feature_deltas: dict[int, torch.Tensor]) -> None:
+def plot_overlay_with_spread_width(
+    path: Path,
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    feature_deltas: dict[int | tuple[int, int], torch.Tensor],
+) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
 
     for n_ring, data in centers.items():
         x = data["index"]
+        color = color_for(n_ring)
         add_width_line(
             axes[0],
             x,
             data["class0"],
             data["class0_std"],
-            color=COLORS[n_ring],
+            color=color,
             linestyle="-",
             marker="o",
             label=f"{run_label(n_ring)}, class 0",
@@ -331,7 +488,7 @@ def plot_overlay_with_spread_width(path: Path, centers: dict[int, dict[str, torc
             x,
             data["class1"],
             data["class1_std"],
-            color=COLORS[n_ring],
+            color=color,
             linestyle="--",
             marker="s",
             label=f"{run_label(n_ring)}, class 1",
@@ -340,7 +497,7 @@ def plot_overlay_with_spread_width(path: Path, centers: dict[int, dict[str, torc
             x,
             data["delta"],
             marker="o",
-            color=COLORS[n_ring],
+            color=color,
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -349,7 +506,7 @@ def plot_overlay_with_spread_width(path: Path, centers: dict[int, dict[str, torc
             x,
             feature_deltas[n_ring].abs().max(dim=0).values,
             marker="o",
-            color=COLORS[n_ring],
+            color=color,
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -384,14 +541,18 @@ def lighten_color(color: str, amount: float = 0.45) -> tuple[float, float, float
     return tuple((rgb + (white - rgb) * amount).tolist())
 
 
-def plot_overlay_with_variance_band(path: Path, centers: dict[int, dict[str, torch.Tensor]], feature_deltas: dict[int, torch.Tensor]) -> None:
+def plot_overlay_with_variance_band(
+    path: Path,
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    feature_deltas: dict[int | tuple[int, int], torch.Tensor],
+) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
 
     for n_ring, data in centers.items():
         x = data["index"].to(torch.float32)
-        class0_color = COLORS[n_ring]
-        class1_color = lighten_color(COLORS[n_ring], amount=0.42)
+        class0_color = color_for(n_ring)
+        class1_color = lighten_color(class0_color, amount=0.42)
 
         for class_label, mean_key, std_key, marker, color in [
             ("class 0", "class0", "class0_std", "o", class0_color),
@@ -417,7 +578,7 @@ def plot_overlay_with_variance_band(path: Path, centers: dict[int, dict[str, tor
             x,
             data["delta"],
             marker="o",
-            color=COLORS[n_ring],
+            color=class0_color,
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -426,7 +587,7 @@ def plot_overlay_with_variance_band(path: Path, centers: dict[int, dict[str, tor
             x,
             feature_deltas[n_ring].abs().max(dim=0).values,
             marker="o",
-            color=COLORS[n_ring],
+            color=class0_color,
             linewidth=2.2,
             markersize=8.5,
             label=run_label(n_ring),
@@ -454,15 +615,17 @@ def plot_overlay_with_variance_band(path: Path, centers: dict[int, dict[str, tor
     plt.close(fig)
 
 
-def dataset_row(n_ring: int, capture_shape: str) -> str:
-    nodes_per_graph = 1 + 2 * n_ring
+def dataset_row(n_ring: int | tuple[int, int], capture_shape: str) -> str:
+    inner, outer = run_sort_key(n_ring)
+    nodes_per_graph = 1 + inner + outer
     total_nodes = nodes_per_graph * 100
-    directed_edges = 4 * n_ring
-    sector = 360.0 / n_ring
+    undirected_edges = inner + outer
+    directed_edges = 2 * (inner + outer)
+    sector = 360.0 / inner
     label0_high = 0.45 * sector
     offset = 0.5 * sector
     return (
-        f"| {run_label(n_ring)} | {nodes_per_graph} | {total_nodes} | {2 * n_ring} | "
+        f"| {run_label(n_ring)} | {nodes_per_graph} | {total_nodes} | {undirected_edges} | "
         f"{directed_edges} | {sector:g} deg | 0 to {label0_high:g} deg | {offset:g} deg | "
         f"{offset:g} to {offset + label0_high:g} deg | `(100, {nodes_per_graph})` | "
         f"`(100, {nodes_per_graph}, 3)` | `(100, 2, {directed_edges})` | `{capture_shape}` |"
@@ -485,13 +648,13 @@ def write_report(
     overlay_spread_width_png: Path,
     overlay_variance_band_png: Path,
     args: argparse.Namespace,
-    summaries: dict[int, dict[str, str]],
-    centers: dict[int, dict[str, torch.Tensor]],
-    feature_deltas: dict[int, torch.Tensor],
+    summaries: dict[int | tuple[int, int], dict[str, str]],
+    centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    feature_deltas: dict[int | tuple[int, int], torch.Tensor],
 ) -> None:
-    n_ring_values = sorted(summaries)
-    run_list = ", ".join(str(n_ring) for n_ring in n_ring_values)
-    title = " vs ".join(f"{n_ring}-Node" for n_ring in n_ring_values)
+    n_ring_values = sorted(summaries, key=run_sort_key)
+    run_list = ", ".join(run_label(n_ring) for n_ring in n_ring_values)
+    title = " vs ".join(run_label(n_ring) for n_ring in n_ring_values)
     training_rows = "\n".join(
         f"| {run_label(n_ring)} | {summaries[n_ring]['epochs']} | {summaries[n_ring]['loss']} | "
         f"{summaries[n_ring]['accuracy']} | {summaries[n_ring]['margin_accuracy']} |"
@@ -571,19 +734,49 @@ def main() -> None:
     args = parse_args()
     output_dir = args.output_dir or args.results_root / "show_invariants_overlay"
     output_dir.mkdir(parents=True, exist_ok=True)
+    run_dirs = (
+        {
+            config: f"show_invariants_inner{config[0]}_outer{config[1]}"
+            for config in DEFAULT_2D_RING_GRAPH_CONFIGS
+        }
+        if args.config_grid
+        else RUN_DIRS
+    )
 
     centers = {}
     feature_deltas = {}
     summaries = {}
     center_values = {}
-    for n_ring, dirname in RUN_DIRS.items():
+    for n_ring, dirname in run_dirs.items():
         run_dir = args.results_root / dirname
         centers[n_ring] = read_center_csv(run_dir / "layer0_center_invariants.csv")
         feature_deltas[n_ring] = read_feature_csv(run_dir / "layer0_feature_invariant_deltas.csv")
         center_values[n_ring] = read_center_values_csv(run_dir / "layer0_center_invariant_values.csv")
         summaries[n_ring] = read_summary(run_dir / "summary.txt")
 
-    overlay_name = "_".join(f"n{n_ring}" for n_ring in sorted(RUN_DIRS)) + "_invariant_overlay"
+    if args.config_grid:
+        overlay_name = f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_invariant_overlay"
+    else:
+        overlay_name = "_".join(run_slug(n_ring) for n_ring in sorted(run_dirs, key=run_sort_key)) + "_invariant_overlay"
+
+    if args.boxplots_by_inner_only:
+        if not args.config_grid:
+            raise ValueError("--boxplots-by-inner-only requires --config-grid.")
+        for inner in sorted({config[0] for config in DEFAULT_2D_RING_GRAPH_CONFIGS}):
+            boxplot_path = output_dir / f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_inner{inner}_boxplot.png"
+            plot_boxplot_only(boxplot_path, inner=inner, centers=centers, center_values=center_values)
+            print(f"wrote {boxplot_path}")
+        return
+
+    if args.class_separation_by_inner_only:
+        if not args.config_grid:
+            raise ValueError("--class-separation-by-inner-only requires --config-grid.")
+        for inner in sorted({config[0] for config in DEFAULT_2D_RING_GRAPH_CONFIGS}):
+            separation_path = output_dir / f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_inner{inner}_class_separation.png"
+            plot_class_separation_only(separation_path, inner=inner, centers=centers)
+            print(f"wrote {separation_path}")
+        return
+
     overlay_csv = output_dir / f"{overlay_name}.csv"
     overlay_png = output_dir / f"{overlay_name}.png"
     overlay_variance_png = output_dir / f"{overlay_name}_with_variance.png"
