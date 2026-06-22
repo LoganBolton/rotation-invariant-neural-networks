@@ -17,7 +17,7 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-hippynn = { path = "external/hippynn", editable = true }
+hippynn = { git = "https://github.com/LoganBolton/hippynn.git", rev = "009d62f55f5e4d919399d31711736f7d7e2f737c" }
 
 [dependency-groups]
 dev = [

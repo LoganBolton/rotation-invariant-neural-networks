@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# model, l_max, n_max
 DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 0, 1),
     ("hiphop", 1, 2),

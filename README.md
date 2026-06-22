@@ -15,17 +15,13 @@ Copyright 2025. Triad National Security, LLC. All rights reserved. This program 
 ## Setup
 
 ```
-# Download the submodule contents.
-git submodule update --init --recursive
-
 # Create/sync the uv environment from pyproject.toml and uv.lock.
 uv sync
-
 # Run the test suite.
 uv run pytest
 ```
 
 ## Benchmarks
 
-Small geometric datasets and the shared train/sweep commands live in
+Details about the datasets and training files can be found in
 [`benchmarks/`](benchmarks/README.md).

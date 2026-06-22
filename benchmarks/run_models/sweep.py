@@ -1,12 +1,4 @@
-"""Sweep small HIP-NN configs on two-sample geometric benchmark tasks.
-
-Example run:
-`uv run python benchmarks/run_models/sweep.py --dataset incompleteness --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/incompleteness/results/system_node`
-uv run python benchmarks/run_models/sweep.py --dataset k_chain --hard-cutoffs 5 10 14 --model-configs default --output-dir benchmarks/k_chain/results/system_node
-uv run python benchmarks/run_models/sweep.py --dataset rotating_ring --neighborhood-cutoff edges --hard-cutoffs 4 5 --model-configs default --output-dir benchmarks/rotating_ring/results/system_original_edges
-"""
-
-
+"""Sweep small HIP-NN configs on two-sample geometric benchmark tasks."""
 
 from __future__ import annotations
 
