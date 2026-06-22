@@ -47,6 +47,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dist-hard-max", type=float, default=6.5)
     parser.add_argument("--success-margin", type=float, default=0.1)
     parser.add_argument("--stop-at-accuracy", type=float, default=1.0)
+    parser.add_argument("--plot-radial-functions", action="store_true", help="Write radial sensitivity-function plots in a separate subdirectory.")
+    parser.add_argument("--radial-r-min", type=float, default=0.0)
+    parser.add_argument("--radial-r-max", type=float, default=None)
+    parser.add_argument("--radial-n-points", type=int, default=500)
     parser.add_argument(
         "--no-channel-average",
         action="store_true",
@@ -91,6 +95,16 @@ def training_namespace(args: argparse.Namespace) -> SimpleNamespace:
         stop_at_accuracy=args.stop_at_accuracy,
         success_margin=args.success_margin,
     )
+
+
+def graph_label(args: argparse.Namespace) -> str:
+    return f"{args.n_inner} inner {args.n_outer} outer"
+
+
+def radial_reference_distances() -> dict[str, float]:
+    inner_radius = 1.0
+    outer_radius = inner_radius + 1.2
+    return {"inner": inner_radius, "outer": outer_radius}
 
 
 def train_model(model: torch.nn.Module, forward_args: tuple[torch.Tensor, ...], targets: torch.Tensor, args: argparse.Namespace) -> dict[str, float]:
@@ -148,6 +162,115 @@ def capture_invariants(model: torch.nn.Module, forward_args: tuple[torch.Tensor,
     for handle in handles:
         handle.remove()
     return captures
+
+
+def sensitivity_layers(model: torch.nn.Module) -> list[tuple[str, torch.nn.Module]]:
+    layers = []
+    for name, module in model.named_modules():
+        if hasattr(module, "sensitivity"):
+            layers.append((name, module.sensitivity))
+    return layers
+
+
+def evaluate_sensitivity(sensitivity: torch.nn.Module, distances: torch.Tensor) -> torch.Tensor:
+    try:
+        return sensitivity(distances, warn_low_distances=False).detach().cpu()
+    except TypeError:
+        return sensitivity(distances).detach().cpu()
+
+
+def write_radial_function_csv(path: Path, distances: torch.Tensor, sensitivity_values: torch.Tensor) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        header = ["distance"]
+        header.extend(f"sensitivity_{index}" for index in range(sensitivity_values.shape[1]))
+        header.append("sum")
+        writer.writerow(header)
+        for row_index in range(distances.numel()):
+            values = sensitivity_values[row_index]
+            writer.writerow(
+                [
+                    f"{float(distances[row_index]):.8g}",
+                    *[f"{float(value):.8g}" for value in values],
+                    f"{float(values.sum()):.8g}",
+                ]
+            )
+
+
+def plot_radial_functions(
+    path: Path,
+    distances: torch.Tensor,
+    sensitivity_values: torch.Tensor,
+    *,
+    title: str,
+    reference_distances: dict[str, float] | None = None,
+) -> None:
+    fig, axis = plt.subplots(figsize=(8.5, 5.4), constrained_layout=True)
+    for sensitivity_index in range(sensitivity_values.shape[1]):
+        axis.plot(
+            distances,
+            sensitivity_values[:, sensitivity_index],
+            color="#b33a3a",
+            alpha=0.35,
+            linewidth=1.3,
+            label=f"S{sensitivity_index}",
+        )
+    axis.plot(distances, sensitivity_values.sum(dim=1), color="#145f7a", linewidth=2.4, label="sum")
+    if reference_distances:
+        colors = ["#2f7d32", "#f47c20", "#555555"]
+        for index, (label, distance) in enumerate(reference_distances.items()):
+            axis.axvline(
+                distance,
+                color=colors[index % len(colors)],
+                linestyle="--",
+                linewidth=1.8,
+                label=f"{label} r={distance:g}",
+            )
+    axis.set_title(title)
+    axis.set_xlabel("pair distance r")
+    axis.set_ylabel("radial sensitivity")
+    axis.grid(True, alpha=0.25)
+    axis.legend(ncol=4, fontsize=7.5)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def write_radial_function_outputs(
+    output_dir: Path,
+    model: torch.nn.Module,
+    *,
+    title_prefix: str,
+    r_min: float,
+    r_max: float,
+    n_points: int,
+    reference_distances: dict[str, float] | None = None,
+) -> list[tuple[Path, Path]]:
+    radial_dir = output_dir / "radial_functions"
+    radial_dir.mkdir(parents=True, exist_ok=True)
+    outputs = []
+
+    for layer_index, (name, sensitivity) in enumerate(sensitivity_layers(model)):
+        first_param = next(sensitivity.parameters())
+        distances = torch.linspace(r_min, r_max, n_points, dtype=first_param.dtype, device=first_param.device)
+        sensitivity_values = evaluate_sensitivity(sensitivity, distances)
+        distances_cpu = distances.detach().cpu()
+
+        safe_name = f"layer{layer_index}"
+        csv_path = radial_dir / f"{safe_name}_radial_functions.csv"
+        png_path = radial_dir / f"{safe_name}_radial_functions.png"
+        write_radial_function_csv(csv_path, distances_cpu, sensitivity_values)
+        plot_radial_functions(
+            png_path,
+            distances_cpu,
+            sensitivity_values,
+            title=f"{title_prefix}: radial sensitivity functions",
+            reference_distances=reference_distances,
+        )
+        outputs.append((csv_path, png_path))
+
+    if not outputs:
+        raise RuntimeError("No model modules with sensitivity functions were found.")
+    return outputs
 
 
 CONTRACTION_LABELS = {
@@ -492,6 +615,8 @@ def main() -> None:
 
     metrics = train_model(model, forward_args, targets, args)
     captures = capture_invariants(model, forward_args)
+    plot_title_prefix = graph_label(args)
+    radial_r_max = args.radial_r_max if args.radial_r_max is not None else args.dist_hard_max
 
     summary_lines = [
         f"dataset: {description}",
@@ -502,6 +627,21 @@ def main() -> None:
         f"margin_accuracy: {metrics['margin_accuracy']:.3f}",
         "",
     ]
+    if args.plot_radial_functions:
+        radial_outputs = write_radial_function_outputs(
+            args.output_dir,
+            model,
+            title_prefix=plot_title_prefix,
+            r_min=args.radial_r_min,
+            r_max=radial_r_max,
+            n_points=args.radial_n_points,
+            reference_distances=radial_reference_distances(),
+        )
+        summary_lines.append(f"radial_function_range: {args.radial_r_min:g} to {radial_r_max:g}")
+        for radial_csv_path, radial_png_path in radial_outputs:
+            summary_lines.append(f"radial_function_csv: {radial_csv_path}")
+            summary_lines.append(f"radial_function_plot: {radial_png_path}")
+        summary_lines.append("")
 
     for layer_index, (name, capture) in enumerate(captures.items()):
         (
@@ -539,13 +679,13 @@ def main() -> None:
             values,
             labels.cpu(),
             standardized_delta,
-            f"{safe_name}: center-node HIP-HOP invariants by class",
+            f"{plot_title_prefix}: center node invariant means by class",
             invariant_labels,
         )
         plot_feature_delta_heatmap(
             feature_png_path,
             feature_standardized_delta,
-            f"{safe_name}: center-node feature x invariant class deltas",
+            f"{plot_title_prefix}: center node feature x invariant class deltas",
             invariant_labels,
         )
         if args.no_channel_average:
@@ -558,7 +698,7 @@ def main() -> None:
             plot_channel_delta_magnitude_heatmap(
                 channel_png_path,
                 feature_standardized_delta,
-                f"{safe_name}: per-channel center-node invariant class-delta magnitude",
+                f"{plot_title_prefix}: center node invariant class deltas",
                 invariant_labels,
             )
 

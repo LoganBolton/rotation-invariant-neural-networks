@@ -1,7 +1,7 @@
 """Plot rotating-ring margin-accuracy comparisons across models.
 
-Each input file is treated as one model. The plot uses graph type on the y axis
-and l_max on the x axis. For two models, each cell is split diagonally so the
+Each input file is treated as one model. The plot uses graph type on the x axis
+and l_max on the y axis. For two models, each cell is split diagonally so the
 two outcomes can be compared directly.
 
 uv run python benchmarks/rotating_ring/multi_model_comparison.py benchmarks/rotating_ring/results/equi_vs_hiphop_const_radius/equiformer.json benchmarks/rotating_ring/results/equi_vs_hiphop_const_radius/hiphop.json --labels Equiformer HIP-HOP --output benchmarks/rotating_ring/results/equi_vs_hiphop_const_radius/multi_model_comparison.png
@@ -349,7 +349,7 @@ def plot_results(
         graph_labels[result.graph_key] = result.graph_label
 
     graphs = sorted(graph_labels, key=sort_graph_key)
-    l_max_values = sorted({result.l_max for result in results if result.l_max >= min_l_max})
+    l_max_values = sorted({result.l_max for result in results if result.l_max >= min_l_max}, reverse=True)
     if not graphs or not l_max_values:
         raise ValueError("No plottable results found.")
 
@@ -357,15 +357,15 @@ def plot_results(
         key: aggregate_values(values, aggregate) for key, values in grouped.items()
     }
 
-    x_positions = [index * CELL_WIDTH for index in range(len(l_max_values))]
+    x_positions = [index * CELL_WIDTH for index in range(len(graphs))]
 
-    fig_width = max(7.0, 1.35 * len(l_max_values) + 3.2)
-    fig_height = max(5.0, 0.42 * len(graphs) + 2.4)
+    fig_width = max(8.0, 1.08 * len(graphs) + 3.8)
+    fig_height = max(5.0, 0.55 * len(l_max_values) + 2.6)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
     markers = model_markers(models)
 
-    for y_index, graph in enumerate(graphs):
-        for x_position, l_max in zip(x_positions, l_max_values, strict=True):
+    for y_index, l_max in enumerate(l_max_values):
+        for x_position, graph in zip(x_positions, graphs, strict=True):
             values = [matrix.get((model, graph, l_max)) for model in models]
             if len(models) == 2:
                 draw_two_model_cell(ax, x_position, y_index, values, markers)
@@ -373,27 +373,28 @@ def plot_results(
                 draw_multi_model_cell(ax, x_position, y_index, values, markers)
 
     for boundary in inner_group_boundaries(graphs):
+        boundary_x = boundary * CELL_WIDTH
         ax.plot(
-            [x_positions[0] - CELL_WIDTH / 2.0, x_positions[-1] + CELL_WIDTH / 2.0],
-            [boundary, boundary],
+            [boundary_x, boundary_x],
+            [-0.5, len(l_max_values) - 0.5],
             color="#111111",
             linewidth=2.8,
             solid_capstyle="butt",
         )
 
     ax.set_title(title)
-    ax.set_xlabel("l_max")
-    ax.set_ylabel("graph type")
-    ax.set_xticks(x_positions, [str(value) for value in l_max_values])
-    ax.set_yticks(range(len(graphs)), [graph_labels[graph] for graph in graphs])
+    ax.set_xlabel("graph type")
+    ax.set_ylabel("l_max")
+    ax.set_xticks(x_positions, [graph_labels[graph] for graph in graphs], rotation=45, ha="right")
+    ax.set_yticks(range(len(l_max_values)), [str(value) for value in l_max_values])
     ax.set_xlim(x_positions[0] - CELL_WIDTH / 2.0, x_positions[-1] + CELL_WIDTH / 2.0)
-    ax.set_ylim(len(graphs) - 0.5, -0.5)
+    ax.set_ylim(len(l_max_values) - 0.5, -0.5)
     ax.set_aspect("equal", adjustable="box")
     ax.tick_params(axis="both", length=0)
 
     legend_items = [
         Patch(facecolor=SUCCESS_COLOR, edgecolor=EDGE_COLOR, label="margin_accuracy = 1.0"),
-        Patch(facecolor=FAILURE_COLOR, edgecolor=EDGE_COLOR, label="margin_accuracy != 1.0"),
+        Patch(facecolor=FAILURE_COLOR, edgecolor=EDGE_COLOR, label="margin_accuracy = 0.5"),
         Patch(facecolor=MISSING_COLOR, edgecolor=EDGE_COLOR, label="missing run"),
     ]
     if len(models) == 2:

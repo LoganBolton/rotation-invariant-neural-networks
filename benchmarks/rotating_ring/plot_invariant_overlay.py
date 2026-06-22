@@ -46,6 +46,30 @@ COLORS = {
     3: "#006bb6",
     4: "#f47c20",
 }
+RADIAL_SUCCESS_CONFIGS = {
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (2, 1),
+    (2, 2),
+    (3, 1),
+    (3, 3),
+}
+CONTRACTION_LABELS = {
+    0: r"$s$",
+    1: r"$v_i v_i$",
+    2: r"$q_{ij}q_{ij}$",
+    3: r"$q_{ij}q_{jk}q_{ki}$",
+    4: r"$t_{ijk}t_{ijk}$",
+    5: r"$(t_{ikl}t_{jkl})(t_{imn}t_{jmn})$",
+    6: r"$q_{ij}v_i v_j$",
+    7: r"$(q_{ij}v_j)(q_{ik}v_k)$",
+    8: r"$t_{ijk}v_i v_j v_k$",
+    9: r"$(t_{ikl}t_{jkl})v_i v_j$",
+    10: r"$(t_{ikl}t_{jkl})q_{ij}$",
+    11: r"$(t_{ikl}t_{jkl})(q_{im}q_{jm})$",
+    12: r"$(t_{ijk}q_{jk})(t_{ilm}q_{lm})$",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,7 +98,63 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="For --config-grid, write only four class-separation figures grouped by fixed inner-ring count.",
     )
+    parser.add_argument(
+        "--radial-functions-grid-only",
+        action="store_true",
+        help="For --config-grid, write one inner-by-outer grid of radial sensitivity plots.",
+    )
+    parser.add_argument(
+        "--feature-delta-grid-only",
+        action="store_true",
+        help="For --config-grid, write one inner-by-outer grid of feature x invariant class-delta heatmaps.",
+    )
+    parser.add_argument(
+        "--invariant-axis-contractions",
+        action="store_true",
+        help="Label invariant plot axes by the tensor contraction for each invariant column.",
+    )
     return parser.parse_args()
+
+
+def active_invariant_ids(l_max: int, n_max: int) -> list[int]:
+    invariant_ids = [0]
+    if l_max >= 1 and n_max >= 2:
+        invariant_ids.append(1)
+    if l_max >= 2:
+        if n_max >= 2:
+            invariant_ids.append(2)
+        if n_max >= 3:
+            invariant_ids.extend([3, 6])
+        if n_max >= 4:
+            invariant_ids.append(7)
+    if l_max >= 3:
+        if n_max >= 2:
+            invariant_ids.append(4)
+        if n_max >= 3:
+            invariant_ids.append(10)
+        if n_max >= 4:
+            invariant_ids.extend([5, 8, 9, 11, 12])
+    return sorted(invariant_ids)
+
+
+def invariant_axis_labels(l_max: int, n_max: int, n_invariants: int, *, use_contractions: bool) -> list[str]:
+    if not use_contractions:
+        return [str(i) for i in range(n_invariants)]
+
+    invariant_ids = active_invariant_ids(l_max, n_max)
+    if len(invariant_ids) != n_invariants:
+        return [str(i) for i in range(n_invariants)]
+    return [CONTRACTION_LABELS[invariant_id] for invariant_id in invariant_ids]
+
+
+def set_invariant_xticks(axis: plt.Axes, invariant_labels: list[str]) -> None:
+    use_contractions = invariant_labels[0].startswith("$")
+    axis.set_xticks(torch.arange(len(invariant_labels)))
+    axis.set_xticklabels(
+        invariant_labels,
+        rotation=35.0 if use_contractions else 0.0,
+        ha="right" if use_contractions else "center",
+    )
 
 
 def run_label(n_ring: int | tuple[int, int]) -> str:
@@ -153,6 +233,27 @@ def read_center_values_csv(path: Path) -> dict[tuple[int, int], list[float]]:
     return values
 
 
+def read_radial_csv(path: Path) -> tuple[torch.Tensor, torch.Tensor]:
+    rows = []
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            rows.append(row)
+
+    if not rows:
+        raise ValueError(f"No radial-function rows found in {path}.")
+
+    sensitivity_columns = [key for key in rows[0] if key.startswith("sensitivity_")]
+    distances = torch.tensor([float(row["distance"]) for row in rows])
+    values = torch.tensor(
+        [
+            [float(row[column]) for column in sensitivity_columns]
+            for row in rows
+        ]
+    )
+    return distances, values
+
+
 def read_summary(path: Path) -> dict[str, str]:
     text = path.read_text(encoding="utf-8")
     fields = {}
@@ -199,6 +300,7 @@ def plot_overlay(
     centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
     feature_deltas: dict[int | tuple[int, int], torch.Tensor],
     *,
+    invariant_labels: list[str],
     log_y: bool = False,
 ) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
@@ -258,12 +360,12 @@ def plot_overlay(
 
     axes[2].set_title(f"Strongest feature-specific class separation per invariant{scale_suffix}")
     axes[2].set_ylabel("max |standardized delta|")
-    axes[2].set_xlabel("invariant index")
+    axes[2].set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axes[2].legend()
 
     for axis in axes:
         axis.grid(True, alpha=0.25)
-        axis.set_xticks(torch.arange(n_invariants))
+        set_invariant_xticks(axis, invariant_labels)
         if log_y:
             axis.set_yscale("symlog", linthresh=1.0e-3, linscale=0.6)
             axis.set_ylim(bottom=0.0)
@@ -277,6 +379,7 @@ def plot_overlay_with_variance(
     centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
     feature_deltas: dict[int | tuple[int, int], torch.Tensor],
     center_values: dict[int | tuple[int, int], dict[tuple[int, int], list[float]]],
+    invariant_labels: list[str],
 ) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
@@ -344,12 +447,12 @@ def plot_overlay_with_variance(
 
     axes[2].set_title("Strongest feature-specific class separation per invariant")
     axes[2].set_ylabel("max |standardized delta|")
-    axes[2].set_xlabel("invariant index")
+    axes[2].set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axes[2].legend()
 
     for axis in axes:
         axis.grid(True, alpha=0.25)
-        axis.set_xticks(torch.arange(n_invariants))
+        set_invariant_xticks(axis, invariant_labels)
     axes[0].set_xlim(-0.6, n_invariants - 0.4)
 
     fig.savefig(path, dpi=180)
@@ -362,6 +465,7 @@ def plot_boxplot_only(
     inner: int,
     centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
     center_values: dict[int | tuple[int, int], dict[tuple[int, int], list[float]]],
+    invariant_labels: list[str],
 ) -> None:
     configs = [config for config in sorted(centers, key=run_sort_key) if run_sort_key(config)[0] == inner]
     if not configs:
@@ -403,9 +507,9 @@ def plot_boxplot_only(
             offset_index += 1
 
     axis.set_title(f"Center-node invariant distributions: {inner} inner ring node{'s' if inner != 1 else ''}")
-    axis.set_xlabel("invariant index")
+    axis.set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axis.set_ylabel("center-node mean over feature channels")
-    axis.set_xticks(torch.arange(n_invariants))
+    set_invariant_xticks(axis, invariant_labels)
     axis.set_xlim(-0.6, n_invariants - 0.4)
     axis.grid(True, axis="y", alpha=0.25)
     axis.legend(ncol=2, fontsize=8)
@@ -419,6 +523,7 @@ def plot_class_separation_only(
     *,
     inner: int,
     centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
+    invariant_labels: list[str],
 ) -> None:
     configs = [config for config in sorted(centers, key=run_sort_key) if run_sort_key(config)[0] == inner]
     if not configs:
@@ -441,13 +546,159 @@ def plot_class_separation_only(
 
     axis.axhline(0.0, color="black", linewidth=0.8)
     axis.set_title(f"Class separation by invariant: {inner} inner ring node{'s' if inner != 1 else ''}")
-    axis.set_xlabel("invariant index")
+    axis.set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axis.set_ylabel("standardized class delta")
-    axis.set_xticks(torch.arange(n_invariants))
+    set_invariant_xticks(axis, invariant_labels)
     axis.grid(True, alpha=0.25)
     axis.legend(ncol=2, fontsize=9)
 
     fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_radial_functions_grid(
+    path: Path,
+    radial_values: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]],
+) -> None:
+    inner_values = sorted({config[0] for config in radial_values})
+    outer_values = sorted({config[1] for config in radial_values})
+    fig, axes = plt.subplots(
+        len(inner_values),
+        len(outer_values),
+        figsize=(4.0 * len(outer_values), 3.0 * len(inner_values)),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+    if len(inner_values) == 1:
+        axes = axes.reshape(1, -1)
+    if len(outer_values) == 1:
+        axes = axes.reshape(-1, 1)
+
+    max_y = max(float(values.max().item()) for _, values in radial_values.values())
+    max_y = max(max_y, max(float(values.sum(dim=1).max().item()) for _, values in radial_values.values()))
+
+    reference_distances = {"inner": 1.0, "outer": 2.2}
+    reference_colors = {"inner": "#2f7d32", "outer": "#f47c20"}
+
+    sensitivity_handle = None
+    sum_handle = None
+    reference_handles = {}
+    for row_index, inner in enumerate(inner_values):
+        for col_index, outer in enumerate(outer_values):
+            axis = axes[row_index][col_index]
+            distances, values = radial_values[(inner, outer)]
+            for sensitivity_index in range(values.shape[1]):
+                (line,) = axis.plot(
+                    distances,
+                    values[:, sensitivity_index],
+                    color="#b33a3a",
+                    alpha=0.28,
+                    linewidth=0.9,
+                )
+                sensitivity_handle = sensitivity_handle or line
+            (sum_line,) = axis.plot(distances, values.sum(dim=1), color="#145f7a", linewidth=1.8)
+            sum_handle = sum_handle or sum_line
+            for label, distance in reference_distances.items():
+                ref_line = axis.axvline(
+                    distance,
+                    color=reference_colors[label],
+                    linestyle="--",
+                    linewidth=1.2,
+                )
+                reference_handles.setdefault(label, ref_line)
+            success = (inner, outer) in RADIAL_SUCCESS_CONFIGS
+            axis.text(
+                0.94,
+                0.88,
+                "✓" if success else "✕",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                color="#1b8a3a" if success else "#c92828",
+                fontsize=28,
+                fontweight="bold",
+                zorder=10,
+            )
+            axis.set_title(f"{inner} inner / {outer} outer", fontsize=10)
+            axis.grid(True, alpha=0.22)
+            axis.set_ylim(-0.05, max_y * 1.08)
+            if col_index == 0:
+                axis.set_ylabel("radial sensitivity")
+            if row_index == len(inner_values) - 1:
+                axis.set_xlabel("pair distance r")
+
+    legend_handles = [sensitivity_handle, sum_handle, reference_handles["inner"], reference_handles["outer"]]
+    legend_labels = ["individual sensitivities", "sum", "inner r=1", "outer r=2.2"]
+    fig.legend(legend_handles, legend_labels, loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.02))
+    fig.suptitle("Radial sensitivity functions by rotating-ring graph", y=1.06, fontsize=14)
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_feature_delta_grid(
+    path: Path,
+    feature_deltas: dict[int | tuple[int, int], torch.Tensor],
+    invariant_labels: list[str],
+) -> None:
+    configs = [config for config in feature_deltas if isinstance(config, tuple)]
+    inner_values = sorted({config[0] for config in configs})
+    outer_values = sorted({config[1] for config in configs})
+    fig, axes = plt.subplots(
+        len(inner_values),
+        len(outer_values),
+        figsize=(4.0 * len(outer_values), 3.0 * len(inner_values)),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+    if len(inner_values) == 1:
+        axes = axes.reshape(1, -1)
+    if len(outer_values) == 1:
+        axes = axes.reshape(-1, 1)
+
+    vmax = max(1.0, max(float(values.abs().max().item()) for values in feature_deltas.values()))
+    image = None
+    for row_index, inner in enumerate(inner_values):
+        for col_index, outer in enumerate(outer_values):
+            config = (inner, outer)
+            axis = axes[row_index][col_index]
+            image = axis.imshow(
+                feature_deltas[config],
+                aspect="auto",
+                cmap="coolwarm",
+                vmin=-vmax,
+                vmax=vmax,
+                interpolation="nearest",
+            )
+            success = config in RADIAL_SUCCESS_CONFIGS
+            axis.text(
+                0.94,
+                0.88,
+                "✓" if success else "✕",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                color="#1b8a3a" if success else "#c92828",
+                fontsize=28,
+                fontweight="bold",
+                zorder=10,
+            )
+            axis.set_title(f"{inner} inner / {outer} outer", fontsize=10)
+            axis.set_xticks(torch.arange(len(invariant_labels)))
+            axis.set_xticklabels(invariant_labels, rotation=35.0, ha="right")
+            axis.set_yticks(torch.arange(feature_deltas[config].shape[0]))
+            if col_index == 0:
+                axis.set_ylabel("feature channel")
+            if row_index == len(inner_values) - 1:
+                axis.set_xlabel("invariant contraction")
+
+    if image is None:
+        raise ValueError("No feature-delta values were provided.")
+    colorbar = fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.88)
+    colorbar.set_label("standardized class delta")
+    fig.suptitle("Center node feature x invariant class deltas by rotating-ring graph", y=1.04, fontsize=14)
+    fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -466,6 +717,7 @@ def plot_overlay_with_spread_width(
     path: Path,
     centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
     feature_deltas: dict[int | tuple[int, int], torch.Tensor],
+    invariant_labels: list[str],
 ) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
@@ -524,12 +776,12 @@ def plot_overlay_with_spread_width(
 
     axes[2].set_title("Strongest feature-specific class separation per invariant")
     axes[2].set_ylabel("max |standardized delta|")
-    axes[2].set_xlabel("invariant index")
+    axes[2].set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axes[2].legend()
 
     for axis in axes:
         axis.grid(True, alpha=0.25)
-        axis.set_xticks(torch.arange(n_invariants))
+        set_invariant_xticks(axis, invariant_labels)
 
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -545,6 +797,7 @@ def plot_overlay_with_variance_band(
     path: Path,
     centers: dict[int | tuple[int, int], dict[str, torch.Tensor]],
     feature_deltas: dict[int | tuple[int, int], torch.Tensor],
+    invariant_labels: list[str],
 ) -> None:
     n_invariants = int(next(iter(centers.values()))["index"].numel())
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
@@ -604,12 +857,12 @@ def plot_overlay_with_variance_band(
 
     axes[2].set_title("Strongest feature-specific class separation per invariant")
     axes[2].set_ylabel("max |standardized delta|")
-    axes[2].set_xlabel("invariant index")
+    axes[2].set_xlabel("invariant contraction" if invariant_labels[0].startswith("$") else "invariant index")
     axes[2].legend()
 
     for axis in axes:
         axis.grid(True, alpha=0.25)
-        axis.set_xticks(torch.arange(n_invariants))
+        set_invariant_xticks(axis, invariant_labels)
 
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -753,6 +1006,13 @@ def main() -> None:
         feature_deltas[n_ring] = read_feature_csv(run_dir / "layer0_feature_invariant_deltas.csv")
         center_values[n_ring] = read_center_values_csv(run_dir / "layer0_center_invariant_values.csv")
         summaries[n_ring] = read_summary(run_dir / "summary.txt")
+    n_invariants = int(next(iter(centers.values()))["index"].numel())
+    invariant_labels = invariant_axis_labels(
+        args.l_max,
+        args.n_max,
+        n_invariants,
+        use_contractions=args.invariant_axis_contractions,
+    )
 
     if args.config_grid:
         overlay_name = f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_invariant_overlay"
@@ -764,7 +1024,13 @@ def main() -> None:
             raise ValueError("--boxplots-by-inner-only requires --config-grid.")
         for inner in sorted({config[0] for config in DEFAULT_2D_RING_GRAPH_CONFIGS}):
             boxplot_path = output_dir / f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_inner{inner}_boxplot.png"
-            plot_boxplot_only(boxplot_path, inner=inner, centers=centers, center_values=center_values)
+            plot_boxplot_only(
+                boxplot_path,
+                inner=inner,
+                centers=centers,
+                center_values=center_values,
+                invariant_labels=invariant_labels,
+            )
             print(f"wrote {boxplot_path}")
         return
 
@@ -773,8 +1039,34 @@ def main() -> None:
             raise ValueError("--class-separation-by-inner-only requires --config-grid.")
         for inner in sorted({config[0] for config in DEFAULT_2D_RING_GRAPH_CONFIGS}):
             separation_path = output_dir / f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_inner{inner}_class_separation.png"
-            plot_class_separation_only(separation_path, inner=inner, centers=centers)
+            plot_class_separation_only(
+                separation_path,
+                inner=inner,
+                centers=centers,
+                invariant_labels=invariant_labels,
+            )
             print(f"wrote {separation_path}")
+        return
+
+    if args.radial_functions_grid_only:
+        if not args.config_grid:
+            raise ValueError("--radial-functions-grid-only requires --config-grid.")
+        radial_values = {}
+        for config, dirname in run_dirs.items():
+            radial_values[config] = read_radial_csv(
+                args.results_root / dirname / "radial_functions" / "layer0_radial_functions.csv"
+            )
+        radial_grid_path = output_dir / f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_radial_functions_grid.png"
+        plot_radial_functions_grid(radial_grid_path, radial_values)
+        print(f"wrote {radial_grid_path}")
+        return
+
+    if args.feature_delta_grid_only:
+        if not args.config_grid:
+            raise ValueError("--feature-delta-grid-only requires --config-grid.")
+        feature_grid_path = output_dir / f"default_2d_ring_grid_l{args.l_max}_n{args.n_max}_feature_delta_grid.png"
+        plot_feature_delta_grid(feature_grid_path, feature_deltas, invariant_labels)
+        print(f"wrote {feature_grid_path}")
         return
 
     overlay_csv = output_dir / f"{overlay_name}.csv"
@@ -786,12 +1078,12 @@ def main() -> None:
     overlay_report = output_dir / f"{overlay_name}.md"
 
     write_overlay_csv(overlay_csv, centers, feature_deltas)
-    plot_overlay(overlay_png, centers, feature_deltas)
-    plot_overlay_with_variance(overlay_variance_png, centers, feature_deltas, center_values)
-    plot_overlay_with_spread_width(overlay_spread_width_png, centers, feature_deltas)
-    plot_overlay_with_variance_band(overlay_variance_band_png, centers, feature_deltas)
+    plot_overlay(overlay_png, centers, feature_deltas, invariant_labels=invariant_labels)
+    plot_overlay_with_variance(overlay_variance_png, centers, feature_deltas, center_values, invariant_labels)
+    plot_overlay_with_spread_width(overlay_spread_width_png, centers, feature_deltas, invariant_labels)
+    plot_overlay_with_variance_band(overlay_variance_band_png, centers, feature_deltas, invariant_labels)
     if overlay_log_png is not None:
-        plot_overlay(overlay_log_png, centers, feature_deltas, log_y=True)
+        plot_overlay(overlay_log_png, centers, feature_deltas, invariant_labels=invariant_labels, log_y=True)
     write_report(
         overlay_report,
         overlay_csv=overlay_csv,

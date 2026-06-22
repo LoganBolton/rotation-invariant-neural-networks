@@ -8,10 +8,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # model type, l_max, n_max
+# DEFAULT_MODEL_CONFIGS = (
+#     ("hiphop", 0, 1),
+#     ("hiphop", 1, 4),
+#     ("hiphop", 2, 4),
+#     ("hiphop", 3, 4),
+# )
+
 DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 0, 1),
+    ("hiphop", 1, 2),
+    ("hiphop", 1, 3),
     ("hiphop", 1, 4),
+    ("hiphop", 2, 2),
+    ("hiphop", 2, 3),
     ("hiphop", 2, 4),
+    ("hiphop", 3, 2),
+    ("hiphop", 3, 3),
     ("hiphop", 3, 4),
 )
 
