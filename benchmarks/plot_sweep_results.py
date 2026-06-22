@@ -1,12 +1,12 @@
-"""Plot sweep results saved from sweep.py markdown logs."""
+"""Plot sweep results saved from sweep.py JSON outputs."""
 
 from __future__ import annotations
 
 import argparse
-import ast
+import json
 import os
-import re
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -16,17 +16,6 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).with_name(".matplotlib-
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 
-
-RESULT_RE = re.compile(
-    r"^\s*(?P<successes>\d+)/(?P<trials>\d+)\s*\|\s*"
-    r"(?P<counterexample>[A-Za-z0-9_ -]+?)\s*\|\s*"
-    r"(?P<cutoff>[-+]?\d+(?:\.\d+)?)\s*\|\s*"
-    r"(?P<layers>\d+)\s*\|\s*"
-    r"(?P<accuracies>\[[^\]]*\])\s*\|\s*"
-    r"(?P<margin_accuracies>\[[^\]]*\])\s*\|"
-)
-
-PARAM_RE = re.compile(r"Using params l-max:\s*(?P<l_max>\d+)\s+and n-max:\s*(?P<n_max>\d+)")
 
 COUNTEREXAMPLE_GEOMETRY = {
     "two_body": {"max_diameter": 10.0},
@@ -45,8 +34,8 @@ COUNTEREXAMPLE_ORDER = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_path", type=Path, help="Markdown sweep log or directory containing sweep logs.")
-    parser.add_argument("--output", type=Path, default=None, help="Output image path for a single-log plot.")
+    parser.add_argument("input_path", type=Path, help="Sweep result JSON, index.json, or directory containing JSON results.")
+    parser.add_argument("--output", type=Path, default=None, help="Output image path for a single-result plot.")
     parser.add_argument(
         "--combined-output",
         type=Path,
@@ -84,32 +73,50 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_model_label(log_file: Path) -> str:
-    for line in log_file.read_text().splitlines():
-        match = PARAM_RE.search(line)
-        if match is None:
-            continue
+    return model_label(load_result_records(log_file)[0], log_file.stem)
 
-        l_max = int(match.group("l_max"))
-        n_max = int(match.group("n_max"))
-        if l_max == 0 and n_max == 1:
-            return "HIP-NN"
-        return f"HIP-HOP-NN\nl={l_max}, n={n_max}"
 
-    return log_file.stem
+def model_label(record: dict[str, Any], fallback: str) -> str:
+    config = record.get("config", {})
+    if not isinstance(config, dict):
+        return fallback
+
+    model = str(config.get("model", ""))
+    l_max = config.get("l_max")
+    n_max = config.get("n_max")
+    if model == "hipnn" or (l_max == 0 and n_max == 1):
+        return "HIP-NN"
+    if model == "hipnnvec":
+        return "HIP-NN-Vec"
+    if l_max is not None and n_max is not None:
+        return f"HIP-HOP-NN\nl={int(l_max)}, n={int(n_max)}"
+    return fallback
 
 
 def model_sort_key(log_file: Path) -> tuple[int, int, str]:
-    match = re.fullmatch(r"l(?P<l_max>\d+)_n(?P<n_max>\d+)", log_file.stem)
-    if match is None:
-        return (10_000, 10_000, log_file.stem)
-    return (int(match.group("l_max")), int(match.group("n_max")), log_file.stem)
+    records = load_result_records(log_file)
+    if records:
+        config = records[0].get("config", {})
+        if isinstance(config, dict):
+            return (int(config.get("l_max", 10_000)), int(config.get("n_max", 10_000)), log_file.stem)
+    return (10_000, 10_000, log_file.stem)
 
 
-def result_log_files(result_dir: Path) -> list[Path]:
-    log_files = sorted(result_dir.glob("*.md"), key=model_sort_key)
-    if not log_files:
-        raise ValueError(f"No markdown sweep logs found in {result_dir}.")
-    return log_files
+def result_json_files(result_dir: Path) -> list[Path]:
+    json_files = sorted(
+        (path for path in result_dir.glob("*.json") if path.name != "index.json"),
+        key=model_sort_key,
+    )
+    if not json_files:
+        json_files = sorted(
+            (path for path in result_dir.glob("**/*.json") if path.name != "index.json"),
+            key=model_sort_key,
+        )
+    if not json_files and (result_dir / "index.json").exists():
+        json_files = [result_dir / "index.json"]
+    if not json_files:
+        raise ValueError(f"No sweep JSON results found in {result_dir}.")
+    return json_files
 
 
 def output_metric_name(metric: str, average_cutoffs: bool) -> str:
@@ -118,35 +125,81 @@ def output_metric_name(metric: str, average_cutoffs: bool) -> str:
     return metric
 
 
-def parse_results(log_file: Path) -> list[dict[str, float | str]]:
-    rows: list[dict[str, float | str]] = []
+def load_result_records(result_file: Path) -> list[dict[str, Any]]:
+    payload = json.loads(result_file.read_text(encoding="utf-8"))
+    if "results" in payload:
+        results = payload["results"]
+        if not isinstance(results, list):
+            raise ValueError(f"Expected a list of results in {result_file}.")
+        return [result for result in results if isinstance(result, dict)]
+    return [payload]
 
-    for line in log_file.read_text().splitlines():
-        match = RESULT_RE.match(line)
-        if match is None:
-            continue
 
-        accuracies = ast.literal_eval(match.group("accuracies"))
-        margin_accuracies = ast.literal_eval(match.group("margin_accuracies"))
-        successes = int(match.group("successes"))
-        trials = int(match.group("trials"))
-        success_rate = successes / trials
+def parse_results(result_file: Path) -> list[dict[str, float | str]]:
+    return parse_result_records(load_result_records(result_file), result_file)
 
-        rows.append(
-            {
-                "counterexample": match.group("counterexample").strip(),
-                "cutoff": float(match.group("cutoff")),
-                "layers": int(match.group("layers")),
-                "accuracy": float(np.mean(accuracies)),
-                "margin_accuracy": float(np.mean(margin_accuracies)),
-                "success_rate": success_rate,
-            }
-        )
+
+def parse_result_records(records: list[dict[str, Any]], source: Path) -> list[dict[str, float | str]]:
+    rows_by_cell: dict[tuple[str, float, int], dict[str, list[float]]] = {}
+
+    for record in records:
+        for run in record.get("runs", []):
+            if not isinstance(run, dict) or run.get("status") != "ok":
+                continue
+
+            run_config = run.get("config", {})
+            if not isinstance(run_config, dict):
+                continue
+            model_config = run_config.get("model", {})
+            metrics = run.get("metrics", {})
+            if not isinstance(model_config, dict) or not isinstance(metrics, dict):
+                continue
+
+            item = dataset_item_label(run)
+            cutoff = float(model_config["dist_hard_max"])
+            layers = int(model_config["n_interaction_layers"])
+            cell = rows_by_cell.setdefault(
+                (item, cutoff, layers),
+                {"accuracy": [], "margin_accuracy": []},
+            )
+            cell["accuracy"].append(float(metrics["accuracy"]))
+            cell["margin_accuracy"].append(float(metrics["margin_accuracy"]))
+
+    rows = [
+        {
+            "counterexample": item,
+            "cutoff": cutoff,
+            "layers": layers,
+            "accuracy": float(np.mean(values["accuracy"])),
+            "margin_accuracy": float(np.mean(values["margin_accuracy"])),
+            "success_rate": float(np.mean([value >= 1.0 for value in values["margin_accuracy"]])),
+        }
+        for (item, cutoff, layers), values in rows_by_cell.items()
+    ]
 
     if not rows:
-        raise ValueError(f"No sweep result rows found in {log_file}.")
+        raise ValueError(f"No sweep result rows found in {source}.")
 
-    return rows
+    return sorted(rows, key=lambda row: (str(row["counterexample"]), float(row["cutoff"]), int(row["layers"])))
+
+
+def dataset_item_label(run: dict[str, Any]) -> str:
+    dataset = run.get("dataset")
+    if not isinstance(dataset, dict):
+        dataset = run.get("config", {}).get("dataset", {})
+    if not isinstance(dataset, dict):
+        dataset = {}
+
+    if "counterexample" in dataset:
+        return str(dataset["counterexample"])
+    if "k" in dataset:
+        return str(dataset["k"])
+    if dataset.get("dataset") == "rotating_ring":
+        n_inner = dataset.get("ring_n_inner")
+        n_outer = dataset.get("ring_n_outer")
+        if n_inner is not None and n_outer is not None:
+            return f"inner{n_inner}_outer{n_outer}"
+    return str(dataset.get("dataset", "dataset"))
 
 
 def filter_cutoffs(
@@ -454,13 +507,39 @@ def main() -> None:
     args = parse_args()
 
     if args.input_path.is_dir():
-        log_files = result_log_files(args.input_path)
+        result_files = result_json_files(args.input_path)
         combined_output = args.combined_output
         if combined_output is None:
             combined_output = args.input_path / f"combined_{output_metric_name(args.metric, args.average_cutoffs)}_grid.png"
         rows_by_model = [
-            (parse_model_label(log_file), filter_cutoffs(parse_results(log_file), args.cutoffs))
-            for log_file in log_files
+            (parse_model_label(result_file), filter_cutoffs(parse_results(result_file), args.cutoffs))
+            for result_file in result_files
+        ]
+        plot_combined_results(
+            rows_by_model,
+            args.metric,
+            combined_output,
+            args.min_layers,
+            args.average_cutoffs,
+            args.hide_max_diameter,
+            args.no_title,
+        )
+        print(f"Saved combined plot: {combined_output}")
+        return
+
+    if args.input_path.name == "index.json":
+        records = load_result_records(args.input_path)
+        combined_output = args.combined_output or args.output
+        if combined_output is None:
+            combined_output = args.input_path.with_name(
+                f"combined_{output_metric_name(args.metric, args.average_cutoffs)}_grid.png"
+            )
+        rows_by_model = [
+            (
+                model_label(record, str(record.get("experiment_name", args.input_path.stem))),
+                filter_cutoffs(parse_result_records([record], args.input_path), args.cutoffs),
+            )
+            for record in records
         ]
         plot_combined_results(
             rows_by_model,
@@ -494,16 +573,16 @@ def main() -> None:
     )
     print(f"Saved plot: {output_file}")
 
-    sibling_logs = result_log_files(args.input_path.parent)
-    if len(sibling_logs) > 1:
+    sibling_results = result_json_files(args.input_path.parent)
+    if len(sibling_results) > 1:
         combined_output = args.combined_output
         if combined_output is None:
             combined_output = args.input_path.parent / (
                 f"combined_{output_metric_name(args.metric, args.average_cutoffs)}_grid.png"
             )
         rows_by_model = [
-            (parse_model_label(log_file), filter_cutoffs(parse_results(log_file), args.cutoffs))
-            for log_file in sibling_logs
+            (parse_model_label(result_file), filter_cutoffs(parse_results(result_file), args.cutoffs))
+            for result_file in sibling_results
         ]
         plot_combined_results(
             rows_by_model,
