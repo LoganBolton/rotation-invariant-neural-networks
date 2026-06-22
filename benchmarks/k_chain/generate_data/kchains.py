@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
@@ -87,3 +89,52 @@ def pair_distance_matrix(positions: torch.Tensor) -> torch.Tensor:
     """Dense pairwise distances for a single geometry."""
 
     return torch.linalg.vector_norm(positions[:, None, :] - positions[None, :, :], dim=-1)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate the k-chain benchmark pair.")
+    parser.add_argument("--k", type=int, default=4, help="Number of middle chain nodes.")
+    parser.add_argument(
+        "--dist-hard-max",
+        type=float,
+        default=6.5,
+        help="Cutoff used only for reporting dense neighbor counts.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional path for torch.save() of the HIP-NN tensor dictionary.",
+    )
+    return parser.parse_args()
+
+
+def _cutoff_pair_count(positions: torch.Tensor, dist_hard_max: float) -> int:
+    distances = pair_distance_matrix(positions)
+    mask = (distances <= dist_hard_max) & ~torch.eye(positions.shape[0], dtype=torch.bool)
+    return int(mask.sum().item())
+
+
+def main() -> None:
+    args = _parse_args()
+    graphs = create_kchains(args.k)
+    arrays = as_hippynn_arrays(graphs)
+
+    print(f"k-chain dataset: k={args.k}, graphs={len(graphs)}, nodes={arrays['Z'].shape[1]}")
+    print("| label | path edges | dense cutoff pairs | diameter |")
+    print("| ---: | ---: | ---: | ---: |")
+    for graph in graphs:
+        distances = pair_distance_matrix(graph.R)
+        print(
+            f"| {graph.label} | {graph.edge_index.shape[1]} | "
+            f"{_cutoff_pair_count(graph.R, args.dist_hard_max)} | {float(distances.max().item()):.4f} |"
+        )
+
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(arrays, args.output)
+        print(f"wrote {args.output}")
+
+
+if __name__ == "__main__":
+    main()

@@ -14,6 +14,7 @@ build/
 **/*.png
 **/results/**/*.md
 **/results/**/*.json
+benchmarks/**/generated/
 benchmarks/incompleteness/results/
 benchmarks/k_chain/results/
 *.html

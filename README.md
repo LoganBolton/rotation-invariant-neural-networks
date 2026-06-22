@@ -24,3 +24,8 @@ uv sync
 # Run the test suite.
 uv run pytest
 ```
+
+## Benchmarks
+
+Small geometric datasets and the shared train/sweep commands live in
+[`benchmarks/`](benchmarks/README.md).
