@@ -67,6 +67,20 @@ def assert_center_leaf_edges(arrays: dict[str, torch.Tensor]) -> None:
     assert torch.equal(torch.cat(rebuilt_edges, dim=1), edge_index)
 
 
+def cutoff_gap(environments) -> tuple[float, float]:
+    max_center_leaf = 0.0
+    min_leaf_leaf = float("inf")
+    for environment in environments:
+        distances = pair_distance_matrix(environment.R)
+        center_leaf = distances[0, 1:]
+        leaf_leaf = distances[1:, 1:]
+        max_center_leaf = max(max_center_leaf, float(center_leaf.max().item()))
+        if leaf_leaf.numel() > 1:
+            mask = ~torch.eye(leaf_leaf.shape[0], dtype=torch.bool)
+            min_leaf_leaf = min(min_leaf_leaf, float(leaf_leaf[mask].min().item()))
+    return max_center_leaf, min_leaf_leaf
+
+
 def verify_pair(name: str, dist_hard_max: float) -> dict[str, object]:
     environments = create_incompleteness_pair(name)
     arrays = as_hippynn_arrays(environments)
@@ -131,6 +145,16 @@ def test_incompleteness_counterexample_dataset(name: str) -> None:
     assert result["n_nodes"] >= result["body_order"]
     assert result["signature_count"] > 0
     assert len(result["cutoff_pair_counts"]) == 2
+
+
+@pytest.mark.parametrize("name", COUNTEREXAMPLE_NAMES)
+def test_incompleteness_cutoff_gap_is_reportable(name: str) -> None:
+    environments = create_incompleteness_pair(name)
+    max_center_leaf, min_leaf_leaf = cutoff_gap(environments)
+
+    assert max_center_leaf > 0.0
+    assert min_leaf_leaf > 0.0
+    assert max_center_leaf != min_leaf_leaf
 
 
 def test_padded_incompleteness_edges_do_not_touch_padding() -> None:
