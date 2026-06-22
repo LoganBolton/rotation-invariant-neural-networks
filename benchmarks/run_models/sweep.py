@@ -35,12 +35,8 @@ from run_models.sweep_configs import (
     parse_ring_graph_configs,
 )
 from run_models.sweep_results import (
-    config_dict,
-    config_result_name,
-    json_results_dir,
     make_run_result_record,
     make_sweep_result_record,
-    sweep_dataset_items,
     write_json_index,
     write_result_json,
 )
@@ -179,13 +175,19 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
     normalize_args(args)
     torch.set_num_threads(1)
 
-    dataset_items = sweep_dataset_items(args)
+    if args.dataset == "k_chain":
+        dataset_items = list(args.k)
+    elif args.dataset == "incompleteness":
+        dataset_items = list(args.counterexamples)
+    else:
+        dataset_items = ["rotating_ring"]
     total_runs = len(dataset_items) * len(args.hard_cutoffs) * len(args.interaction_layers) * len(args.seeds)
     run_index = 0
     run_records: list[dict[str, object]] = []
+    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
 
     print("Config:", flush=True, file=output)
-    print(pprint.pformat(config_dict(args), sort_dicts=True), flush=True, file=output)
+    print(pprint.pformat(config, sort_dicts=True), flush=True, file=output)
     print("", flush=True, file=output)
 
     if args.dataset == "k_chain":
@@ -284,7 +286,10 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                     file=output,
                 )
 
-    result_path = json_results_dir(args) / config_result_name(args.model, args.l_max, args.n_max)
+    results_dir = args.results_json_dir
+    if results_dir is None:
+        results_dir = args.output_dir / "json_results" if args.output_dir else Path("sweep_json_results")
+    result_path = results_dir / ("l0_n1.json" if args.model == "hipnn" else f"l{args.l_max}_n{args.n_max}.json")
     write_result_json(result_path, make_sweep_result_record(args, run_records))
     print(f"Saved sweep JSON: {result_path}", flush=True, file=output)
 
@@ -312,7 +317,9 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
 
     config_jobs = []
     if graph_configs:
-        base_json_dir = json_results_dir(args)
+        base_json_dir = args.results_json_dir
+        if base_json_dir is None:
+            base_json_dir = args.output_dir / "json_results" if args.output_dir else Path("sweep_json_results")
         for graph_config in graph_configs:
             graph_output_dir = args.output_dir / graph_config.name
             graph_args = args_for_ring_graph_config(args, graph_config, graph_output_dir)
@@ -337,8 +344,11 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
             output_file = future.result()
             print(f"Saved sweep log: {output_file}", flush=True)
 
-    write_json_index(json_results_dir(args))
-    print(f"Saved sweep JSON index: {json_results_dir(args) / 'index.json'}", flush=True)
+    results_dir = args.results_json_dir
+    if results_dir is None:
+        results_dir = args.output_dir / "json_results" if args.output_dir else Path("sweep_json_results")
+    write_json_index(results_dir)
+    print(f"Saved sweep JSON index: {results_dir / 'index.json'}", flush=True)
 
 
 def main() -> None:

@@ -8,36 +8,6 @@ from pathlib import Path
 from typing import Any
 
 
-def config_dict(args: argparse.Namespace) -> dict[str, object]:
-    config = vars(args).copy()
-    for key, value in list(config.items()):
-        if isinstance(value, Path):
-            config[key] = str(value)
-    return config
-
-
-def config_result_name(model: str, l_max: int, n_max: int) -> str:
-    if model == "hipnn":
-        return "l0_n1.json"
-    return f"l{l_max}_n{n_max}.json"
-
-
-def json_results_dir(args: argparse.Namespace) -> Path:
-    if args.results_json_dir is not None:
-        return args.results_json_dir
-    if args.output_dir is not None:
-        return args.output_dir / "json_results"
-    return Path("sweep_json_results")
-
-
-def sweep_dataset_items(args: argparse.Namespace) -> list[int | str]:
-    if args.dataset == "k_chain":
-        return list(args.k)
-    if args.dataset == "incompleteness":
-        return list(args.counterexamples)
-    return ["rotating_ring"]
-
-
 def make_run_result_record(
     args: argparse.Namespace,
     dataset_item: int | str,
@@ -53,11 +23,50 @@ def make_run_result_record(
         f"__l{args.l_max}_n{args.n_max}__cutoff{hard_cutoff:g}"
         f"__layers{n_layers}__seed{seed}"
     )
+    experiment_name = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in experiment_name)
+    if args.dataset == "k_chain":
+        dataset = {"dataset": args.dataset, "k": dataset_item}
+    elif args.dataset == "incompleteness":
+        dataset = {"dataset": args.dataset, "counterexample": dataset_item}
+    else:
+        dataset = {
+            "dataset": args.dataset,
+            "ring_n_graphs": args.ring_n_graphs,
+            "ring_seed": args.ring_seed,
+            "ring_n_inner": args.ring_n_inner,
+            "ring_n_outer": args.ring_n_outer,
+            "ring_outer_3d_rotation_deg": args.ring_outer_3d_rotation_deg,
+            "ring_outer_3d_axis_deg": args.ring_outer_3d_axis_deg,
+        }
+
     return {
         "schema_version": 1,
-        "experiment_name": _sanitize_experiment_name(experiment_name),
+        "experiment_name": experiment_name,
         "status": "ok",
-        "config": _run_config(args, dataset_item, hard_cutoff, n_layers, seed, dist_soft_max),
+        "config": {
+            "training": {
+                "epochs": args.epochs,
+                "seed": seed,
+                "learning_rate": args.learning_rate,
+                "success_margin": args.success_margin,
+                "stop_at_accuracy": 1.0,
+            },
+            "dataset": dataset,
+            "model": {
+                "model": args.model,
+                "neighborhood_cutoff": args.neighborhood_cutoff,
+                "n_interaction_layers": n_layers,
+                "n_atom_layers": args.n_atom_layers,
+                "n_features": args.n_features,
+                "n_sensitivities": args.n_sensitivities,
+                "dist_soft_min": args.dist_soft_min,
+                "dist_soft_max": dist_soft_max,
+                "dist_hard_max": hard_cutoff,
+                "l_max": args.l_max,
+                "n_max": args.n_max,
+            },
+            "runtime": {},
+        },
         "metrics": {
             "epoch": result["epoch"],
             "loss": result["loss"],
@@ -65,28 +74,41 @@ def make_run_result_record(
             "margin_accuracy": result["margin_accuracy"],
             "train_time": train_time,
         },
-        "dataset": _dataset_config(args, dataset_item),
+        "dataset": dataset,
         "runtime": {},
         "logits": result["logits"],
     }
 
 
 def make_sweep_result_record(args: argparse.Namespace, runs: list[dict[str, Any]]) -> dict[str, Any]:
+    accuracies = [float(run["metrics"]["accuracy"]) for run in runs]
+    margin_accuracies = [float(run["metrics"]["margin_accuracy"]) for run in runs]
+    experiment_name = f"{args.dataset}__{args.model}__l{args.l_max}_n{args.n_max}"
+    experiment_name = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in experiment_name)
+    if args.dataset == "k_chain":
+        items = list(args.k)
+    elif args.dataset == "incompleteness":
+        items = list(args.counterexamples)
+    else:
+        items = ["rotating_ring"]
+
     return {
         "schema_version": 1,
-        "experiment_name": _sanitize_experiment_name(f"{args.dataset}__{args.model}__l{args.l_max}_n{args.n_max}"),
+        "experiment_name": experiment_name,
         "status": "ok",
-        "config": config_dict(args),
+        "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
         "metrics": {
             "num_runs": len(runs),
-            "mean_accuracy": _mean_metric(runs, "accuracy"),
-            "mean_margin_accuracy": _mean_metric(runs, "margin_accuracy"),
-            "success_rate": _success_rate(runs),
+            "mean_accuracy": sum(accuracies) / len(accuracies) if accuracies else None,
+            "mean_margin_accuracy": sum(margin_accuracies) / len(margin_accuracies) if margin_accuracies else None,
+            "success_rate": sum(value >= 1.0 for value in margin_accuracies) / len(margin_accuracies)
+            if margin_accuracies
+            else None,
             "train_time": sum(float(run["metrics"]["train_time"]) for run in runs),
         },
         "dataset": {
             "dataset": args.dataset,
-            "items": sweep_dataset_items(args),
+            "items": items,
         },
         "runtime": {},
         "runs": runs,
@@ -110,67 +132,3 @@ def write_json_index(results_dir: Path) -> None:
             "results": records,
         },
     )
-
-
-def _dataset_config(args: argparse.Namespace, dataset_item: int | str) -> dict[str, Any]:
-    if args.dataset == "k_chain":
-        return {"dataset": args.dataset, "k": dataset_item}
-    if args.dataset == "incompleteness":
-        return {"dataset": args.dataset, "counterexample": dataset_item}
-    return {
-        "dataset": args.dataset,
-        "ring_n_graphs": args.ring_n_graphs,
-        "ring_seed": args.ring_seed,
-        "ring_n_inner": args.ring_n_inner,
-        "ring_n_outer": args.ring_n_outer,
-        "ring_outer_3d_rotation_deg": args.ring_outer_3d_rotation_deg,
-        "ring_outer_3d_axis_deg": args.ring_outer_3d_axis_deg,
-    }
-
-
-def _run_config(
-    args: argparse.Namespace,
-    dataset_item: int | str,
-    hard_cutoff: float,
-    n_layers: int,
-    seed: int,
-    dist_soft_max: float | None,
-) -> dict[str, Any]:
-    return {
-        "training": {
-            "epochs": args.epochs,
-            "seed": seed,
-            "learning_rate": args.learning_rate,
-            "success_margin": args.success_margin,
-            "stop_at_accuracy": 1.0,
-        },
-        "dataset": _dataset_config(args, dataset_item),
-        "model": {
-            "model": args.model,
-            "neighborhood_cutoff": args.neighborhood_cutoff,
-            "n_interaction_layers": n_layers,
-            "n_atom_layers": args.n_atom_layers,
-            "n_features": args.n_features,
-            "n_sensitivities": args.n_sensitivities,
-            "dist_soft_min": args.dist_soft_min,
-            "dist_soft_max": dist_soft_max,
-            "dist_hard_max": hard_cutoff,
-            "l_max": args.l_max,
-            "n_max": args.n_max,
-        },
-        "runtime": {},
-    }
-
-
-def _mean_metric(runs: list[dict[str, Any]], metric: str) -> float | None:
-    values = [float(run["metrics"][metric]) for run in runs if run.get("status") == "ok"]
-    return sum(values) / len(values) if values else None
-
-
-def _success_rate(runs: list[dict[str, Any]]) -> float | None:
-    values = [float(run["metrics"]["margin_accuracy"]) for run in runs if run.get("status") == "ok"]
-    return sum(value >= 1.0 for value in values) / len(values) if values else None
-
-
-def _sanitize_experiment_name(name: str) -> str:
-    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name)

@@ -7,14 +7,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# model type, l_max, n_max
-# DEFAULT_MODEL_CONFIGS = (
-#     ("hiphop", 0, 1),
-#     ("hiphop", 1, 4),
-#     ("hiphop", 2, 4),
-#     ("hiphop", 3, 4),
-# )
-
 DEFAULT_MODEL_CONFIGS = (
     ("hiphop", 0, 1),
     ("hiphop", 1, 2),
@@ -126,9 +118,7 @@ def parse_ring_graph_configs(configs: list[str] | None, output_dir: Path | None)
 
 
 def config_log_name(model: str, l_max: int, n_max: int) -> str:
-    if model == "hipnn":
-        return "l0_n1.md"
-    return f"l{l_max}_n{n_max}.md"
+    return "l0_n1.md" if model == "hipnn" else f"l{l_max}_n{n_max}.md"
 
 
 def args_for_config(args: argparse.Namespace, model: str, l_max: int, n_max: int) -> argparse.Namespace:
@@ -155,8 +145,6 @@ def args_for_ring_graph_config(
 
 
 def _make_ring_graph_config(dimension: str, n_inner: int, n_outer: int) -> RingGraphConfig:
-    if dimension not in {"2d", "3d"}:
-        raise ValueError(f"Unknown rotating-ring graph dimension {dimension!r}. Expected '2d' or '3d'.")
     rotation = 360.0 if dimension == "3d" else 0.0
     return RingGraphConfig(
         name=f"{dimension}_{n_inner}inner_{n_outer}_outer",

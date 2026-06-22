@@ -78,9 +78,6 @@ def parse_model_label(log_file: Path) -> str:
 
 def model_label(record: dict[str, Any], fallback: str) -> str:
     config = record.get("config", {})
-    if not isinstance(config, dict):
-        return fallback
-
     model = str(config.get("model", ""))
     l_max = config.get("l_max")
     n_max = config.get("n_max")
@@ -94,45 +91,34 @@ def model_label(record: dict[str, Any], fallback: str) -> str:
 
 
 def model_sort_key(log_file: Path) -> tuple[int, int, str]:
-    records = load_result_records(log_file)
-    if records:
-        config = records[0].get("config", {})
-        if isinstance(config, dict):
-            return (int(config.get("l_max", 10_000)), int(config.get("n_max", 10_000)), log_file.stem)
-    return (10_000, 10_000, log_file.stem)
+    config = load_result_records(log_file)[0].get("config", {})
+    return (int(config.get("l_max", 10_000)), int(config.get("n_max", 10_000)), log_file.stem)
 
 
 def result_json_files(result_dir: Path) -> list[Path]:
-    json_files = sorted(
+    files = sorted(
         (path for path in result_dir.glob("*.json") if path.name != "index.json"),
         key=model_sort_key,
     )
-    if not json_files:
-        json_files = sorted(
+    if not files:
+        files = sorted(
             (path for path in result_dir.glob("**/*.json") if path.name != "index.json"),
             key=model_sort_key,
         )
-    if not json_files and (result_dir / "index.json").exists():
-        json_files = [result_dir / "index.json"]
-    if not json_files:
+    if not files and (result_dir / "index.json").exists():
+        files = [result_dir / "index.json"]
+    if not files:
         raise ValueError(f"No sweep JSON results found in {result_dir}.")
-    return json_files
+    return files
 
 
 def output_metric_name(metric: str, average_cutoffs: bool) -> str:
-    if average_cutoffs:
-        return f"{metric}_average_cutoffs"
-    return metric
+    return f"{metric}_average_cutoffs" if average_cutoffs else metric
 
 
 def load_result_records(result_file: Path) -> list[dict[str, Any]]:
     payload = json.loads(result_file.read_text(encoding="utf-8"))
-    if "results" in payload:
-        results = payload["results"]
-        if not isinstance(results, list):
-            raise ValueError(f"Expected a list of results in {result_file}.")
-        return [result for result in results if isinstance(result, dict)]
-    return [payload]
+    return payload.get("results", [payload])
 
 
 def parse_results(result_file: Path) -> list[dict[str, float | str]]:
@@ -144,17 +130,11 @@ def parse_result_records(records: list[dict[str, Any]], source: Path) -> list[di
 
     for record in records:
         for run in record.get("runs", []):
-            if not isinstance(run, dict) or run.get("status") != "ok":
+            if run.get("status") != "ok":
                 continue
 
-            run_config = run.get("config", {})
-            if not isinstance(run_config, dict):
-                continue
-            model_config = run_config.get("model", {})
-            metrics = run.get("metrics", {})
-            if not isinstance(model_config, dict) or not isinstance(metrics, dict):
-                continue
-
+            model_config = run["config"]["model"]
+            metrics = run["metrics"]
             item = dataset_item_label(run)
             cutoff = float(model_config["dist_hard_max"])
             layers = int(model_config["n_interaction_layers"])
@@ -184,12 +164,7 @@ def parse_result_records(records: list[dict[str, Any]], source: Path) -> list[di
 
 
 def dataset_item_label(run: dict[str, Any]) -> str:
-    dataset = run.get("dataset")
-    if not isinstance(dataset, dict):
-        dataset = run.get("config", {}).get("dataset", {})
-    if not isinstance(dataset, dict):
-        dataset = {}
-
+    dataset = run.get("dataset", run["config"]["dataset"])
     if "counterexample" in dataset:
         return str(dataset["counterexample"])
     if "k" in dataset:
@@ -317,7 +292,7 @@ def plot_results(
                 y = cutoffs.index(float(row["cutoff"]))
                 grid[y, x] = float(row[metric])
 
-        image = axis.imshow(
+        axis.imshow(
             grid,
             cmap=cmap,
             norm=norm,
@@ -418,8 +393,6 @@ def plot_combined_results(
 
     cmap = metric_colormap(metric)
     norm = metric_norm(metric)
-    image = None
-
     for y_model, (model_label, rows) in enumerate(filtered_rows_by_model):
         for x_item, item in enumerate(items):
             axis = axes[y_model, x_item]
@@ -445,7 +418,7 @@ def plot_combined_results(
                     y = cutoffs.index(float(row["cutoff"]))
                     grid[y, x] = float(row[metric])
 
-            image = axis.imshow(
+            axis.imshow(
                 grid,
                 cmap=cmap,
                 norm=norm,
