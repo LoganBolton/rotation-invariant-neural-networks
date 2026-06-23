@@ -17,6 +17,8 @@ Copyright 2025. Triad National Security, LLC. All rights reserved. This program 
 ```
 # Create/sync the uv environment from pyproject.toml and uv.lock.
 uv sync
+# Install the local packages in editable mode.
+uv pip install -e .
 # Run the test suite.
 uv run pytest
 ```
