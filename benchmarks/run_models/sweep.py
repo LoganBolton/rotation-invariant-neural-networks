@@ -63,6 +63,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-atom-layers", type=int, default=2)
     parser.add_argument("--n-features", type=int, default=32)
     parser.add_argument("--n-sensitivities", type=int, default=32)
+    parser.add_argument("--device", default="cpu", help="Torch device for training, e.g. 'cpu', 'cuda', or 'cuda:0'.")
+    parser.add_argument(
+        "--devices",
+        nargs="+",
+        default=None,
+        help="Optional list of devices to round-robin across parallel sweep jobs, e.g. cuda:0 cuda:1.",
+    )
     parser.add_argument(
         "--dist-soft-min",
         type=float,
@@ -241,6 +248,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         n_atom_layers=args.n_atom_layers,
                         n_features=args.n_features,
                         n_sensitivities=args.n_sensitivities,
+                        device=args.device,
                         dist_soft_min=args.dist_soft_min,
                         dist_soft_max=dist_soft_max,
                         dist_hard_max=hard_cutoff,
@@ -321,6 +329,14 @@ def run_model_config_batch(args: argparse.Namespace) -> None:
     else:
         for model, l_max, n_max in configs:
             config_jobs.append((args, model, l_max, n_max, args.output_dir))
+
+    if args.devices:
+        assigned_jobs = []
+        for job_index, (job_args, model, l_max, n_max, output_dir) in enumerate(config_jobs):
+            assigned_args = argparse.Namespace(**vars(job_args))
+            assigned_args.device = args.devices[job_index % len(args.devices)]
+            assigned_jobs.append((assigned_args, model, l_max, n_max, output_dir))
+        config_jobs = assigned_jobs
 
     max_workers = args.parallel_configs or len(configs)
     if max_workers < 1:

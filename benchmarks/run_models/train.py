@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-atom-layers", type=int, default=2, help="Atom layers inside each interaction block.")
     parser.add_argument("--n-features", type=int, default=32, help="HIP-NN feature width.")
     parser.add_argument("--n-sensitivities", type=int, default=32, help="Number of sensitivity functions.")
+    parser.add_argument("--device", default="cpu", help="Torch device for training, e.g. 'cpu', 'cuda', or 'cuda:0'.")
     parser.add_argument(
         "--dist-soft-min",
         type=float,
@@ -111,6 +112,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-at-accuracy", type=float, default=1.0, help="Early-stop once this margin accuracy is reached.")
     parser.add_argument("--success-margin", type=float, default=0.1, help="Report margin accuracy using this logit margin.")
     return parser.parse_args()
+
+
+def resolve_device(device: str | torch.device) -> torch.device:
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(f"Requested device {resolved}, but CUDA is not available to this Python process.")
+    return resolved
 
 
 def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str]:
@@ -210,12 +218,17 @@ def model_forward_args(args: argparse.Namespace, arrays: dict[str, torch.Tensor]
 def train(args: argparse.Namespace) -> dict[str, object]:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
+    device = resolve_device(getattr(args, "device", "cpu"))
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+        torch.cuda.manual_seed_all(args.seed)
 
     arrays, _ = load_dataset(args)
+    arrays = {key: value.to(device) for key, value in arrays.items()}
     targets = arrays["T"]
     forward_args = model_forward_args(args, arrays)
 
-    model = make_model(args)
+    model = make_model(args).to(device)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
@@ -253,7 +266,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
         "loss": final_loss,
         "accuracy": final_accuracy,
         "margin_accuracy": final_margin_accuracy,
-        "logits": final_logits.tolist(),
+        "logits": final_logits.cpu().tolist(),
     }
 
     return result
