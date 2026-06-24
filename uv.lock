@@ -239,8 +239,8 @@ wheels = [
 
 [[package]]
 name = "hippynn"
-version = "0.post0.dev232"
-source = { git = "https://github.com/LoganBolton/hippynn.git?rev=009d62f55f5e4d919399d31711736f7d7e2f737c#009d62f55f5e4d919399d31711736f7d7e2f737c" }
+version = "0.post0.dev257"
+source = { git = "https://github.com/LoganBolton/hippynn-optimizations-expanded.git?branch=extended-basis-triton#82233dcbec1e053ed26e56af21d673f36f1a3605" }
 dependencies = [
     { name = "numpy" },
     { name = "torch" },
@@ -953,7 +953,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hippynn", git = "https://github.com/LoganBolton/hippynn.git?rev=009d62f55f5e4d919399d31711736f7d7e2f737c" },
+    { name = "hippynn", git = "https://github.com/LoganBolton/hippynn-optimizations-expanded.git?branch=extended-basis-triton" },
     { name = "matplotlib" },
     { name = "networkx" },
     { name = "numpy" },
