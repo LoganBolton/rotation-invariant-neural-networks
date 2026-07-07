@@ -272,8 +272,10 @@ def create_ring_graph_environment(
 
     if label not in (0, 1):
         raise ValueError(f"label must be 0 or 1, got {label}.")
-    if outer_radius <= inner_radius:
-        raise ValueError(f"outer_radius must be larger than inner_radius, got {outer_radius} <= {inner_radius}.")
+    if inner_radius <= 0.0 or outer_radius <= 0.0:
+        raise ValueError(
+            f"inner_radius and outer_radius must be positive, got {inner_radius} and {outer_radius}."
+        )
 
     dtype = _dtype(dtype)
     phase_offset = label * class_phase_offset_fraction * (2.0 * pi / float(n_inner))

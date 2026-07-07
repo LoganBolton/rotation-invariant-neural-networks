@@ -20,3 +20,4 @@ benchmarks/k_chain/results/
 *.html
 
 benchmarks/rotating_ring/results/*
+*.slurm

@@ -97,6 +97,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
     parser.add_argument("--ring-n-inner", type=int, default=8, help="Number of rotating-ring inner nodes.")
     parser.add_argument("--ring-n-outer", type=int, default=8, help="Number of rotating-ring outer nodes.")
+    parser.add_argument("--ring-inner-radius", type=float, default=1.0, help="Rotating-ring inner radius.")
+    parser.add_argument(
+        "--ring-outer-gap",
+        type=float,
+        default=1.2,
+        help="Rotating-ring outer radius minus inner radius.",
+    )
     parser.add_argument(
         "--ring-outer-3d-rotation-deg",
         type=float,
@@ -139,6 +146,11 @@ def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str
             seed=getattr(args, "ring_seed", 0),
             n_inner=getattr(args, "ring_n_inner", 8),
             n_outer=getattr(args, "ring_n_outer", 8),
+            inner_radius_range=(
+                getattr(args, "ring_inner_radius", 1.0),
+                getattr(args, "ring_inner_radius", 1.0),
+            ),
+            outer_gap_range=(getattr(args, "ring_outer_gap", 1.2), getattr(args, "ring_outer_gap", 1.2)),
             outer_3d_rotation_range=(0.0, getattr(args, "ring_outer_3d_rotation_deg", 0.0) * pi / 180.0),
             outer_3d_axis_angle=getattr(args, "ring_outer_3d_axis_deg", 0.0) * pi / 180.0,
         )

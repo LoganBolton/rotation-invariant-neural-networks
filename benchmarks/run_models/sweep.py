@@ -82,6 +82,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
     parser.add_argument("--ring-n-inner", type=int, default=3, help="Number of rotating-ring inner nodes.")
     parser.add_argument("--ring-n-outer", type=int, default=3, help="Number of rotating-ring outer nodes.")
+    parser.add_argument("--ring-inner-radius", type=float, default=1.0, help="Rotating-ring inner radius.")
+    parser.add_argument(
+        "--ring-outer-gap",
+        type=float,
+        default=1.2,
+        help="Rotating-ring outer radius minus inner radius.",
+    )
     parser.add_argument(
         "--ring-outer-3d-rotation-deg",
         type=float,
@@ -212,6 +219,13 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
             flush=True,
             file=output,
         )
+        print(
+            f"Ring geometry: inner_radius={args.ring_inner_radius:g}, "
+            f"outer_gap={args.ring_outer_gap:g}, "
+            f"outer_radius={args.ring_inner_radius + args.ring_outer_gap:g}",
+            flush=True,
+            file=output,
+        )
         item_header = "dataset"
     print(f"Using params l-max: {args.l_max} and n-max: {args.n_max}", flush=True, file=output)
     print(f"Running {total_runs} trainings: {args.epochs} epochs max each", flush=True, file=output)
@@ -237,6 +251,8 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         ring_seed=args.ring_seed,
                         ring_n_inner=args.ring_n_inner,
                         ring_n_outer=args.ring_n_outer,
+                        ring_inner_radius=args.ring_inner_radius,
+                        ring_outer_gap=args.ring_outer_gap,
                         ring_outer_3d_rotation_deg=args.ring_outer_3d_rotation_deg,
                         ring_outer_3d_axis_deg=args.ring_outer_3d_axis_deg,
                         epochs=args.epochs,
