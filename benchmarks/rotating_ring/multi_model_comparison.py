@@ -10,6 +10,7 @@ uv run python benchmarks/rotating_ring/multi_model_comparison.py benchmarks/rota
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -72,6 +73,12 @@ def parse_args() -> argparse.Namespace:
         default=2,
         help="Smallest l_max column to show. Defaults to 2, which drops l_max=0 and l_max=1.",
     )
+    parser.add_argument(
+        "--max-l-max",
+        type=int,
+        default=None,
+        help="Largest l_max column to show. Useful when one model has higher-l_max runs the other cannot match.",
+    )
     return parser.parse_args()
 
 
@@ -95,6 +102,18 @@ def read_json_or_jsonl(path: Path) -> Any:
         return records
 
 
+def input_result_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise FileNotFoundError(path)
+
+    json_files = sorted(path.rglob("*.json"))
+    if json_files:
+        return json_files
+    return sorted(path.rglob("*.md"))
+
+
 def result_records(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -107,6 +126,39 @@ def result_records(data: Any) -> list[dict[str, Any]]:
         return [data]
 
     return []
+
+
+def read_markdown_record(path: Path) -> dict[str, Any] | None:
+    text = path.read_text(encoding="utf-8")
+    config_match = re.search(r"Config:\n(?P<config>\{.*?\})\n\nSweeping ", text, flags=re.DOTALL)
+    config = ast.literal_eval(config_match.group("config")) if config_match else {}
+
+    summary_match = re.search(
+        r"(?P<successes>\d+)/(?P<trials>\d+)\s*\|\s*"
+        r"(?P<dataset>[^|]+)\|\s*"
+        r"(?P<cutoff>[^|]+)\|\s*"
+        r"(?P<layers>[^|]+)\|\s*"
+        r"(?P<accuracies>\[[^\n]*?\])\s*\|\s*"
+        r"(?P<margin_accuracies>\[[^\n]*?\])\s*\|",
+        text,
+    )
+    if not summary_match:
+        return None
+
+    margin_accuracies = ast.literal_eval(summary_match.group("margin_accuracies"))
+    final_accuracies = ast.literal_eval(summary_match.group("accuracies"))
+    trials = int(summary_match.group("trials"))
+    return {
+        "config": config,
+        "dataset": {"dataset": summary_match.group("dataset").strip()},
+        "experiment_name": path.stem,
+        "metrics": {
+            "mean_accuracy": mean(float(value) for value in final_accuracies),
+            "mean_margin_accuracy": mean(float(value) for value in margin_accuracies),
+            "num_runs": trials,
+            "success_rate": int(summary_match.group("successes")) / trials if trials else 0.0,
+        },
+    }
 
 
 def nested_get(data: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> Any:
@@ -196,23 +248,30 @@ def infer_graph(record: dict[str, Any]) -> tuple[tuple[int, int] | str, str] | N
 def collect_results(path: Path, model: str) -> list[RunResult]:
     results: list[RunResult] = []
     skipped = 0
-    for record in result_records(read_json_or_jsonl(path)):
-        graph = infer_graph(record)
-        l_max = infer_l_max(record)
-        margin_accuracy = infer_margin_accuracy(record)
-        if graph is None or l_max is None or margin_accuracy is None:
-            skipped += 1
-            continue
-        graph_key, graph_label = graph
-        results.append(
-            RunResult(
-                model=model,
-                graph_key=graph_key,
-                graph_label=graph_label,
-                l_max=l_max,
-                margin_accuracy=margin_accuracy,
+    for result_file in input_result_files(path):
+        if result_file.suffix == ".md":
+            record = read_markdown_record(result_file)
+            records = [] if record is None else [record]
+        else:
+            records = result_records(read_json_or_jsonl(result_file))
+
+        for record in records:
+            graph = infer_graph(record)
+            l_max = infer_l_max(record)
+            margin_accuracy = infer_margin_accuracy(record)
+            if graph is None or l_max is None or margin_accuracy is None:
+                skipped += 1
+                continue
+            graph_key, graph_label = graph
+            results.append(
+                RunResult(
+                    model=model,
+                    graph_key=graph_key,
+                    graph_label=graph_label,
+                    l_max=l_max,
+                    margin_accuracy=margin_accuracy,
+                )
             )
-        )
 
     if skipped:
         print(f"Skipped {skipped} records from {path} that were missing graph, l_max, or margin accuracy.")
@@ -341,6 +400,7 @@ def plot_results(
     aggregate: str,
     title: str,
     min_l_max: int,
+    max_l_max: int | None,
 ) -> None:
     grouped: dict[tuple[str, tuple[int, int] | str, int], list[float]] = {}
     graph_labels: dict[tuple[int, int] | str, str] = {}
@@ -349,7 +409,14 @@ def plot_results(
         graph_labels[result.graph_key] = result.graph_label
 
     graphs = sorted(graph_labels, key=sort_graph_key)
-    l_max_values = sorted({result.l_max for result in results if result.l_max >= min_l_max}, reverse=True)
+    l_max_values = sorted(
+        {
+            result.l_max
+            for result in results
+            if result.l_max >= min_l_max and (max_l_max is None or result.l_max <= max_l_max)
+        },
+        reverse=True,
+    )
     if not graphs or not l_max_values:
         raise ValueError("No plottable results found.")
 
@@ -428,7 +495,7 @@ def main() -> None:
         print(f"Read {len(model_results)} plottable records for {model} from {path}.")
         results.extend(model_results)
 
-    plot_results(results, models, args.output, args.aggregate, args.title, args.min_l_max)
+    plot_results(results, models, args.output, args.aggregate, args.title, args.min_l_max, args.max_l_max)
     print(f"Wrote {args.output}")
 
 
