@@ -38,6 +38,7 @@ class RunResult:
     graph_key: tuple[int, int] | str
     graph_label: str
     l_max: int
+    n_max: int | None
     margin_accuracy: float
 
 
@@ -78,6 +79,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Largest l_max column to show. Useful when one model has higher-l_max runs the other cannot match.",
+    )
+    parser.add_argument(
+        "--n-max",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Optional n_max filter for each input, in the same order as inputs.",
     )
     return parser.parse_args()
 
@@ -196,6 +204,29 @@ def infer_l_max(record: dict[str, Any]) -> int | None:
     return None
 
 
+def infer_n_max(record: dict[str, Any]) -> int | None:
+    value = nested_get(
+        record,
+        (
+            ("config", "model", "nmax"),
+            ("config", "nmax"),
+            ("config", "n_max"),
+            ("model", "nmax"),
+            ("model", "n_max"),
+            ("nmax",),
+            ("n_max",),
+        ),
+    )
+    if value is not None:
+        return int(value)
+
+    name = str(record.get("experiment_name", ""))
+    match = re.search(r"(?:^|[_-])n(?:max)?_?(\d+)(?:$|[_-])", name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def infer_margin_accuracy(record: dict[str, Any]) -> float | None:
     value = nested_get(
         record,
@@ -245,9 +276,10 @@ def infer_graph(record: dict[str, Any]) -> tuple[tuple[int, int] | str, str] | N
     return None
 
 
-def collect_results(path: Path, model: str) -> list[RunResult]:
+def collect_results(path: Path, model: str, n_max_filter: int | None = None) -> list[RunResult]:
     results: list[RunResult] = []
     skipped = 0
+    filtered = 0
     for result_file in input_result_files(path):
         if result_file.suffix == ".md":
             record = read_markdown_record(result_file)
@@ -258,9 +290,13 @@ def collect_results(path: Path, model: str) -> list[RunResult]:
         for record in records:
             graph = infer_graph(record)
             l_max = infer_l_max(record)
+            n_max = infer_n_max(record)
             margin_accuracy = infer_margin_accuracy(record)
             if graph is None or l_max is None or margin_accuracy is None:
                 skipped += 1
+                continue
+            if n_max_filter is not None and n_max != n_max_filter:
+                filtered += 1
                 continue
             graph_key, graph_label = graph
             results.append(
@@ -269,12 +305,15 @@ def collect_results(path: Path, model: str) -> list[RunResult]:
                     graph_key=graph_key,
                     graph_label=graph_label,
                     l_max=l_max,
+                    n_max=n_max,
                     margin_accuracy=margin_accuracy,
                 )
             )
 
     if skipped:
         print(f"Skipped {skipped} records from {path} that were missing graph, l_max, or margin accuracy.")
+    if filtered:
+        print(f"Filtered {filtered} records from {path} that did not match n_max={n_max_filter}.")
     return results
 
 
@@ -310,7 +349,7 @@ def add_model_marker(ax: plt.Axes, x: float, y: float, marker: str, model_index:
         ha="center",
         va="center",
         color="#111111",
-        fontsize=8.5,
+        fontsize=10.5,
         fontweight="bold",
     )
 
@@ -319,7 +358,8 @@ def model_markers(models: list[str]) -> list[str]:
     markers: list[str] = []
     used: set[str] = set()
     for index, model in enumerate(models):
-        marker = next((char.upper() for char in model if char.isalnum()), "")
+        n_match = re.fullmatch(r"\s*n\s*=\s*(\d+)\s*", model)
+        marker = n_match.group(1) if n_match else next((char.upper() for char in model if char.isalnum()), "")
         if not marker or marker in used:
             marker = chr(ord("A") + index)
         if marker in used:
@@ -462,7 +502,6 @@ def plot_results(
     legend_items = [
         Patch(facecolor=SUCCESS_COLOR, edgecolor=EDGE_COLOR, label="margin_accuracy = 1.0"),
         Patch(facecolor=FAILURE_COLOR, edgecolor=EDGE_COLOR, label="margin_accuracy = 0.5"),
-        Patch(facecolor=MISSING_COLOR, edgecolor=EDGE_COLOR, label="missing run"),
     ]
     if len(models) == 2:
         legend_items.extend(
@@ -487,11 +526,14 @@ def main() -> None:
     args = parse_args()
     if args.labels is not None and len(args.labels) != len(args.inputs):
         raise SystemExit("--labels must have the same number of entries as inputs.")
+    if args.n_max is not None and len(args.n_max) != len(args.inputs):
+        raise SystemExit("--n-max must have the same number of entries as inputs.")
 
     models = args.labels if args.labels is not None else [path.stem for path in args.inputs]
+    n_max_filters = args.n_max if args.n_max is not None else [None] * len(args.inputs)
     results: list[RunResult] = []
-    for path, model in zip(args.inputs, models, strict=True):
-        model_results = collect_results(path, model)
+    for path, model, n_max_filter in zip(args.inputs, models, n_max_filters, strict=True):
+        model_results = collect_results(path, model, n_max_filter)
         print(f"Read {len(model_results)} plottable records for {model} from {path}.")
         results.extend(model_results)
 
