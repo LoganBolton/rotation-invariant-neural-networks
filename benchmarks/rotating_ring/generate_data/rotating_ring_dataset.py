@@ -339,6 +339,166 @@ def create_ring_graph_environment(
     )
 
 
+def create_z_phase_ring_environment(
+    *,
+    label: int,
+    inner_z_rotation: float,
+    radius: float = 1.0,
+    n_inner: int = 8,
+    n_outer: int = 8,
+    global_rotation: float = 0.0,
+    name: str | None = None,
+    add_inner_ring_edges: bool = False,
+    add_outer_ring_edges: bool = False,
+    add_center_outer_edges: bool = False,
+    dtype: torch.dtype | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> RingGraphEnvironment:
+    """Create an equal-radius graph with the inner ring tilted into z."""
+
+    if label not in (0, 1):
+        raise ValueError(f"label must be 0 or 1, got {label}.")
+
+    dtype = _dtype(dtype)
+    inner = ring_positions(
+        n_inner,
+        radius,
+        global_rotation=global_rotation,
+        dtype=dtype,
+    )
+    inner = rotate_points_about_xy_axis(
+        inner,
+        angle=inner_z_rotation,
+        axis_angle=global_rotation + pi / 6.0,
+    )
+    outer = ring_positions(n_outer, radius, global_rotation=global_rotation, dtype=dtype)
+    positions = torch.cat([torch.zeros((1, 3), dtype=dtype), inner, outer], dim=0)
+    distances = closest_inner_outer_distances_from_positions(positions, n_inner=n_inner, n_outer=n_outer)
+
+    sample_metadata: dict[str, Any] = {
+        "class_name": CLASS_NAMES[label],
+        "n_inner": int(n_inner),
+        "n_outer": int(n_outer),
+        "inner_radius": float(radius),
+        "outer_radius": float(radius),
+        "outer_gap": 0.0,
+        "outer_rotation_clockwise": 0.0,
+        "outer_3d_rotation": 0.0,
+        "outer_3d_axis_angle": 0.0,
+        "outer_3d_rotation_deg": 0.0,
+        "outer_3d_axis_deg": 0.0,
+        "global_rotation": float(global_rotation),
+        "class_phase_offset_clockwise": 0.0,
+        "inner_phase_clockwise": 0.0,
+        "inner_z_rotation": float(inner_z_rotation),
+        "inner_z_rotation_deg": _degrees(inner_z_rotation),
+        "outer_phase_clockwise": 0.0,
+        "class_phase_offset_fraction": 0.0,
+        "add_inner_ring_edges": bool(add_inner_ring_edges),
+        "add_outer_ring_edges": bool(add_outer_ring_edges),
+        "add_center_outer_edges": bool(add_center_outer_edges),
+        "dataset_variant": "equal_radius_inner_z_rotation",
+        "z_phase_rotation_clockwise": 0.0,
+        "z_phase_rotation_deg": 0.0,
+        **_distance_metadata(distances),
+    }
+    if metadata:
+        sample_metadata.update(dict(metadata))
+
+    n_nodes = positions.shape[0]
+    return RingGraphEnvironment(
+        name=name or f"z_phase_ring_{CLASS_NAMES[label]}",
+        label=label,
+        Z=torch.ones(n_nodes, dtype=torch.long),
+        R=positions,
+        edge_index=ring_graph_edge_index(
+            n_inner=n_inner,
+            n_outer=n_outer,
+            add_inner_ring_edges=add_inner_ring_edges,
+            add_outer_ring_edges=add_outer_ring_edges,
+            add_center_outer_edges=add_center_outer_edges,
+        ),
+        node_role=torch.tensor([CENTER_ROLE] + [INNER_ROLE] * n_inner + [OUTER_ROLE] * n_outer),
+        metadata=sample_metadata,
+    )
+
+
+def create_z_phase_ring_sample_dataset(
+    *,
+    radius: float = 1.0,
+    far_inner_rotation_degrees: float = 15.0,
+    n_inner: int = 8,
+    n_outer: int = 8,
+    add_inner_ring_edges: bool = False,
+    add_outer_ring_edges: bool = False,
+    add_center_outer_edges: bool = False,
+    dtype: torch.dtype | None = None,
+) -> list[RingGraphEnvironment]:
+    """Two-graph equal-radius sample: one close graph and one far graph."""
+
+    _validate_positive(n_inner=n_inner, n_outer=n_outer, radius=radius)
+    far_rotation = float(far_inner_rotation_degrees) * pi / 180.0
+    thresholds = (0.0, float(far_rotation))
+    envs = [
+        create_z_phase_ring_environment(
+            label=0,
+            inner_z_rotation=0.0,
+            radius=radius,
+            n_inner=n_inner,
+            n_outer=n_outer,
+            name="z_phase_ring_close_0000",
+            add_inner_ring_edges=add_inner_ring_edges,
+            add_outer_ring_edges=add_outer_ring_edges,
+            add_center_outer_edges=add_center_outer_edges,
+            dtype=dtype,
+            metadata={
+                "class_index": 0,
+                "generation_index": 0,
+                "variation_t": 0.0,
+                "distance_split_rank": 0,
+            },
+        ),
+        create_z_phase_ring_environment(
+            label=1,
+            inner_z_rotation=far_rotation,
+            radius=radius,
+            n_inner=n_inner,
+            n_outer=n_outer,
+            name="z_phase_ring_far_0000",
+            add_inner_ring_edges=add_inner_ring_edges,
+            add_outer_ring_edges=add_outer_ring_edges,
+            add_center_outer_edges=add_center_outer_edges,
+            dtype=dtype,
+            metadata={
+                "class_index": 0,
+                "generation_index": 1,
+                "variation_t": 1.0,
+                "distance_split_rank": 1,
+            },
+        ),
+    ]
+
+    split_values = [float(env.metadata["closest_inner_outer_distance_min"]) for env in envs]
+    for index, env in enumerate(envs):
+        meta = dict(env.metadata)
+        meta.update(
+            balanced_class_count=1,
+            requested_n_graphs=2,
+            returned_n_graphs=2,
+            dropped_for_balance=0,
+            distance_split_threshold_low=split_values[0],
+            distance_split_threshold_high=split_values[1],
+            active_outer_gap_range=(0.0, 0.0),
+            z_phase_rotation_range_deg=(0.0, float(far_inner_rotation_degrees)),
+            z_phase_thresholds_radians=thresholds,
+            class_distance_mode="equal_radius_z_phase_minimum_nearest_distance",
+            distance_split_statistic="min",
+            distance_histogram_value_name="closest_inner_outer_distance_min",
+        )
+        envs[index] = replace(env, metadata=meta)
+    return envs
+
+
 def _generation_ranges_valid(ranges: Mapping[str, tuple[float, float]]) -> None:
     for name, value_range in ranges.items():
         _validate_range(name, value_range)
@@ -593,6 +753,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--outer-3d-axis-deg", type=float, default=0.0)
     parser.add_argument("--global-rotation-frac-min", type=float, default=0.0)
     parser.add_argument("--global-rotation-frac-max", type=float, default=0.0)
+    parser.add_argument("--z-phase-sample", action="store_true")
+    parser.add_argument("--z-phase-radius", type=float, default=1.0)
+    parser.add_argument("--z-phase-far-inner-rotation-deg", type=float, default=15.0)
     parser.add_argument("--random-parameters", action="store_true")
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--add-inner-ring-edges", action="store_true")
@@ -608,24 +771,35 @@ def _tilt_range_from_args(args: argparse.Namespace) -> tuple[float, float]:
 
 def main() -> None:
     args = _parse_args()
-    envs = create_rotating_ring_dataset(
-        n_graphs=args.n_graphs,
-        seed=args.seed,
-        n_inner=args.n_inner,
-        n_outer=args.n_outer,
-        inner_radius_range=(args.inner_radius_min, args.inner_radius_max),
-        outer_gap_range=(args.outer_gap_min, args.outer_gap_max),
-        outer_rotation_fraction_range=(args.outer_rotation_frac_min, args.outer_rotation_frac_max),
-        outer_3d_rotation_range=_tilt_range_from_args(args),
-        outer_3d_axis_angle=args.outer_3d_axis_deg * pi / 180.0,
-        global_rotation_fraction_range=(args.global_rotation_frac_min, args.global_rotation_frac_max),
-        distance_split_statistic=args.distance_split_statistic,
-        smooth_order=not args.random_parameters,
-        shuffle=args.shuffle,
-        add_inner_ring_edges=args.add_inner_ring_edges,
-        add_outer_ring_edges=args.add_outer_ring_edges,
-        add_center_outer_edges=args.add_center_outer_edges,
-    )
+    if args.z_phase_sample:
+        envs = create_z_phase_ring_sample_dataset(
+            radius=args.z_phase_radius,
+            far_inner_rotation_degrees=args.z_phase_far_inner_rotation_deg,
+            n_inner=args.n_inner,
+            n_outer=args.n_outer,
+            add_inner_ring_edges=args.add_inner_ring_edges,
+            add_outer_ring_edges=args.add_outer_ring_edges,
+            add_center_outer_edges=args.add_center_outer_edges,
+        )
+    else:
+        envs = create_rotating_ring_dataset(
+            n_graphs=args.n_graphs,
+            seed=args.seed,
+            n_inner=args.n_inner,
+            n_outer=args.n_outer,
+            inner_radius_range=(args.inner_radius_min, args.inner_radius_max),
+            outer_gap_range=(args.outer_gap_min, args.outer_gap_max),
+            outer_rotation_fraction_range=(args.outer_rotation_frac_min, args.outer_rotation_frac_max),
+            outer_3d_rotation_range=_tilt_range_from_args(args),
+            outer_3d_axis_angle=args.outer_3d_axis_deg * pi / 180.0,
+            global_rotation_fraction_range=(args.global_rotation_frac_min, args.global_rotation_frac_max),
+            distance_split_statistic=args.distance_split_statistic,
+            smooth_order=not args.random_parameters,
+            shuffle=args.shuffle,
+            add_inner_ring_edges=args.add_inner_ring_edges,
+            add_outer_ring_edges=args.add_outer_ring_edges,
+            add_center_outer_edges=args.add_center_outer_edges,
+        )
 
     try:
         from .rotating_ring_viewer import VIEWER_VERSION, write_ring_graph_viewer
