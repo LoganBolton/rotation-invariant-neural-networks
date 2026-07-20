@@ -272,7 +272,7 @@ def create_ring_graph_environment(
 
     if label not in (0, 1):
         raise ValueError(f"label must be 0 or 1, got {label}.")
-    if outer_radius <= inner_radius:
+    if outer_radius < inner_radius:
         raise ValueError(f"outer_radius must be larger than inner_radius, got {outer_radius} <= {inner_radius}.")
 
     dtype = _dtype(dtype)
@@ -494,6 +494,129 @@ def create_z_phase_ring_sample_dataset(
             distance_histogram_value_name="closest_inner_outer_distance_min",
         )
         envs[index] = replace(env, metadata=meta)
+    return envs
+
+
+def create_far_inner_tilt_sample_dataset(
+    *,
+    inner_radius: float = 1.0,
+    outer_gap: float = 1.2,
+    inner_tilt_degrees: tuple[float, float] = (7.0, 15.0),
+    far_outer_rotation_fraction: float = 0.5,
+    inner_tilt_axis_angle: float = pi / 6.0,
+    global_rotation: float = 0.0,
+    n_inner: int = 8,
+    n_outer: int = 8,
+    add_inner_ring_edges: bool = False,
+    add_outer_ring_edges: bool = False,
+    add_center_outer_edges: bool = False,
+    dtype: torch.dtype | None = None,
+) -> list[RingGraphEnvironment]:
+    """Create two far-phase graphs that differ only by inner-ring tilt.
+
+    The outer ring, radii, planar far phase, graph topology, and global
+    orientation are identical in both graphs. The first graph uses
+    ``inner_tilt_degrees[0]`` and the second uses
+    ``inner_tilt_degrees[1]``.
+    """
+
+    _validate_positive(n_inner=n_inner, n_outer=n_outer, inner_radius=inner_radius)
+    if outer_gap < -0.1:
+        raise ValueError(f"outer_gap must be positive, got {outer_gap}.")
+    if len(inner_tilt_degrees) != 2:
+        raise ValueError(
+            "inner_tilt_degrees must contain exactly two angles, "
+            f"got {inner_tilt_degrees}."
+        )
+
+    relative_period = relative_ring_rotation_period(n_inner, n_outer)
+    far_outer_rotation = float(far_outer_rotation_fraction) * relative_period
+
+    # Build the planar far geometry once so the outer-ring coordinates are
+    # exactly identical in both returned graphs.
+    base = create_ring_graph_environment(
+        label=1,
+        inner_radius=inner_radius,
+        outer_radius=inner_radius + outer_gap,
+        outer_rotation_clockwise=far_outer_rotation,
+        outer_3d_rotation=0.0,
+        outer_3d_axis_angle=0.0,
+        global_rotation=global_rotation,
+        n_inner=n_inner,
+        n_outer=n_outer,
+        class_phase_offset_fraction=0.0,
+        name="far_inner_tilt_base",
+        add_inner_ring_edges=add_inner_ring_edges,
+        add_outer_ring_edges=add_outer_ring_edges,
+        add_center_outer_edges=add_center_outer_edges,
+        dtype=dtype,
+        metadata={
+            "dataset_variant": "far_phase_inner_tilt_pair",
+            "base_class_name": "far",
+            "far_outer_rotation_fraction": float(far_outer_rotation_fraction),
+        },
+    )
+
+    inner_slice, _ = _ring_slices(n_inner, n_outer)
+    envs: list[RingGraphEnvironment] = []
+
+    for label, tilt_degrees in enumerate(inner_tilt_degrees):
+        tilt_radians = float(tilt_degrees) * pi / 180.0
+        positions = base.R.clone()
+        positions[inner_slice] = rotate_points_about_xy_axis(
+            positions[inner_slice],
+            angle=tilt_radians,
+            axis_angle=global_rotation + inner_tilt_axis_angle,
+        )
+        distances = closest_inner_outer_distances_from_positions(
+            positions,
+            n_inner=n_inner,
+            n_outer=n_outer,
+        )
+
+        class_name = f"far_tilt_{float(tilt_degrees):g}_deg"
+        metadata = dict(base.metadata)
+        metadata.update(
+            class_name=class_name,
+            class_index=0,
+            generation_index=label,
+            variation_t=float(label),
+            distance_split_rank=label,
+            balanced_class_count=1,
+            requested_n_graphs=2,
+            returned_n_graphs=2,
+            dropped_for_balance=0,
+            active_outer_gap_range=(float(outer_gap), float(outer_gap)),
+            inner_3d_rotation=float(tilt_radians),
+            inner_3d_rotation_deg=float(tilt_degrees),
+            inner_3d_axis_angle=float(inner_tilt_axis_angle),
+            inner_3d_axis_deg=_degrees(inner_tilt_axis_angle),
+            inner_tilt_pair_degrees=tuple(map(float, inner_tilt_degrees)),
+            class_distance_mode="fixed_far_phase_inner_tilt_pair",
+            distance_split_statistic="min",
+            distance_histogram_value_name="closest_inner_outer_distance_min",
+            **_distance_metadata(distances),
+        )
+
+        envs.append(
+            replace(
+                base,
+                name=class_name,
+                label=label,
+                R=positions,
+                metadata=metadata,
+            )
+        )
+
+    split_values = [float(env.metadata["closest_inner_outer_distance_min"]) for env in envs]
+    for index, env in enumerate(envs):
+        metadata = dict(env.metadata)
+        metadata.update(
+            distance_split_threshold_low=min(split_values),
+            distance_split_threshold_high=max(split_values),
+        )
+        envs[index] = replace(env, metadata=metadata)
+
     return envs
 
 
@@ -754,6 +877,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--z-phase-sample", action="store_true")
     parser.add_argument("--z-phase-radius", type=float, default=1.0)
     parser.add_argument("--z-phase-far-inner-rotation-deg", type=float, default=15.0)
+    parser.add_argument("--far-inner-tilt-sample", action="store_true")
+    parser.add_argument("--far-inner-tilt-deg-a", type=float, default=7.0)
+    parser.add_argument("--far-inner-tilt-deg-b", type=float, default=15.0)
+    parser.add_argument("--far-inner-tilt-axis-deg", type=float, default=30.0)
+    parser.add_argument("--far-outer-rotation-frac", type=float, default=0.5)
     parser.add_argument("--random-parameters", action="store_true")
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--add-inner-ring-edges", action="store_true")
@@ -769,7 +897,23 @@ def _tilt_range_from_args(args: argparse.Namespace) -> tuple[float, float]:
 
 def main() -> None:
     args = _parse_args()
-    if args.z_phase_sample:
+    if args.far_inner_tilt_sample:
+        envs = create_far_inner_tilt_sample_dataset(
+            inner_radius=args.inner_radius_min,
+            outer_gap=args.outer_gap_min,
+            inner_tilt_degrees=(
+                args.far_inner_tilt_deg_a,
+                args.far_inner_tilt_deg_b,
+            ),
+            far_outer_rotation_fraction=args.far_outer_rotation_frac,
+            inner_tilt_axis_angle=args.far_inner_tilt_axis_deg * pi / 180.0,
+            n_inner=args.n_inner,
+            n_outer=args.n_outer,
+            add_inner_ring_edges=args.add_inner_ring_edges,
+            add_outer_ring_edges=args.add_outer_ring_edges,
+            add_center_outer_edges=args.add_center_outer_edges,
+        )
+    elif args.z_phase_sample:
         envs = create_z_phase_ring_sample_dataset(
             radius=args.z_phase_radius,
             far_inner_rotation_degrees=args.z_phase_far_inner_rotation_deg,
