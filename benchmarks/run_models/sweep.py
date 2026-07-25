@@ -78,11 +78,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--l-max", type=int, default=2)
     parser.add_argument("--n-max", type=int, default=3)
+    parser.add_argument(
+        "--hiphop-group-norm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable HIP-HOP's per-invariant GroupNorm (use --no-hiphop-group-norm to disable it).",
+    )
     parser.add_argument("--ring-n-graphs", type=int, default=2, help="Number of rotating-ring graphs to generate.")
     parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
     parser.add_argument("--ring-n-inner", type=int, default=3, help="Number of rotating-ring inner nodes.")
     parser.add_argument("--ring-n-outer", type=int, default=3, help="Number of rotating-ring outer nodes.")
     parser.add_argument("--ring-inner-radius", type=float, default=1.0, help="Rotating-ring inner radius.")
+    parser.add_argument(
+        "--ring-z-phase-sample",
+        action="store_true",
+        help="Train on the two-graph equal-radius inner-z-rotation sample.",
+    )
+    parser.add_argument("--ring-z-phase-far-inner-rotation-deg", type=float, default=15.0)
     parser.add_argument(
         "--ring-outer-gap",
         type=float,
@@ -252,6 +264,8 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         ring_n_inner=args.ring_n_inner,
                         ring_n_outer=args.ring_n_outer,
                         ring_inner_radius=args.ring_inner_radius,
+                        ring_z_phase_sample=args.ring_z_phase_sample,
+                        ring_z_phase_far_inner_rotation_deg=args.ring_z_phase_far_inner_rotation_deg,
                         ring_outer_gap=args.ring_outer_gap,
                         ring_outer_3d_rotation_deg=args.ring_outer_3d_rotation_deg,
                         ring_outer_3d_axis_deg=args.ring_outer_3d_axis_deg,
@@ -270,6 +284,7 @@ def run_sweep(args: argparse.Namespace, output: TextIO) -> None:
                         dist_hard_max=hard_cutoff,
                         l_max=args.l_max,
                         n_max=args.n_max,
+                        hiphop_group_norm=args.hiphop_group_norm,
                         stop_at_accuracy=1.0,
                         success_margin=args.success_margin,
                     )

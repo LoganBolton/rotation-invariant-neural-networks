@@ -28,6 +28,7 @@ from k_chain.generate_data.kchains import create_kchains
 from rotating_ring.generate_data.rotating_ring_dataset import (
     as_hippynn_arrays as as_rotating_ring_arrays,
     create_rotating_ring_dataset,
+    create_z_phase_ring_sample_dataset,
 )
 
 
@@ -93,11 +94,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dist-hard-max", type=float, default=6.5)
     parser.add_argument("--l-max", type=int, default=2, help="HIP-HOP angular order.")
     parser.add_argument("--n-max", type=int, default=3, help="HIP-HOP radial tensor order.")
+    parser.add_argument(
+        "--hiphop-group-norm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable HIP-HOP's per-invariant GroupNorm (use --no-hiphop-group-norm to disable it).",
+    )
     parser.add_argument("--ring-n-graphs", type=int, default=500, help="Number of rotating-ring graphs to generate.")
     parser.add_argument("--ring-seed", type=int, default=0, help="Dataset seed for rotating-ring generation.")
     parser.add_argument("--ring-n-inner", type=int, default=8, help="Number of rotating-ring inner nodes.")
     parser.add_argument("--ring-n-outer", type=int, default=8, help="Number of rotating-ring outer nodes.")
     parser.add_argument("--ring-inner-radius", type=float, default=1.0, help="Rotating-ring inner radius.")
+    parser.add_argument(
+        "--ring-z-phase-sample",
+        action="store_true",
+        help="Train on the two-graph equal-radius inner-z-rotation sample.",
+    )
+    parser.add_argument(
+        "--ring-z-phase-far-inner-rotation-deg",
+        type=float,
+        default=15.0,
+        help="Inner-ring z rotation for the far graph in --ring-z-phase-sample mode.",
+    )
     parser.add_argument(
         "--ring-outer-gap",
         type=float,
@@ -141,19 +159,27 @@ def load_dataset(args: argparse.Namespace) -> tuple[dict[str, torch.Tensor], str
             f"{args.counterexample} incompleteness pair",
         )
     if args.dataset == "rotating_ring":
-        environments = create_rotating_ring_dataset(
-            n_graphs=getattr(args, "ring_n_graphs", 500),
-            seed=getattr(args, "ring_seed", 0),
-            n_inner=getattr(args, "ring_n_inner", 8),
-            n_outer=getattr(args, "ring_n_outer", 8),
-            inner_radius_range=(
-                getattr(args, "ring_inner_radius", 1.0),
-                getattr(args, "ring_inner_radius", 1.0),
-            ),
-            outer_gap_range=(getattr(args, "ring_outer_gap", 1.2), getattr(args, "ring_outer_gap", 1.2)),
-            outer_3d_rotation_range=(0.0, getattr(args, "ring_outer_3d_rotation_deg", 0.0) * pi / 180.0),
-            outer_3d_axis_angle=getattr(args, "ring_outer_3d_axis_deg", 0.0) * pi / 180.0,
-        )
+        if getattr(args, "ring_z_phase_sample", False):
+            environments = create_z_phase_ring_sample_dataset(
+                radius=getattr(args, "ring_inner_radius", 1.0),
+                far_inner_rotation_degrees=getattr(args, "ring_z_phase_far_inner_rotation_deg", 15.0),
+                n_inner=getattr(args, "ring_n_inner", 8),
+                n_outer=getattr(args, "ring_n_outer", 8),
+            )
+        else:
+            environments = create_rotating_ring_dataset(
+                n_graphs=getattr(args, "ring_n_graphs", 500),
+                seed=getattr(args, "ring_seed", 0),
+                n_inner=getattr(args, "ring_n_inner", 8),
+                n_outer=getattr(args, "ring_n_outer", 8),
+                inner_radius_range=(
+                    getattr(args, "ring_inner_radius", 1.0),
+                    getattr(args, "ring_inner_radius", 1.0),
+                ),
+                outer_gap_range=(getattr(args, "ring_outer_gap", 1.2), getattr(args, "ring_outer_gap", 1.2)),
+                outer_3d_rotation_range=(0.0, getattr(args, "ring_outer_3d_rotation_deg", 0.0) * pi / 180.0),
+                outer_3d_axis_angle=getattr(args, "ring_outer_3d_axis_deg", 0.0) * pi / 180.0,
+            )
         return as_rotating_ring_arrays(environments), f"{len(environments)} rotating-ring graphs"
     raise ValueError(f"Unknown dataset {args.dataset!r}.")
 
@@ -192,6 +218,7 @@ def make_model(args: argparse.Namespace) -> torch.nn.Module:
             {
                 "l_max": args.l_max,
                 "n_max": args.n_max,
+                "group_norm": getattr(args, "hiphop_group_norm", True),
             }
         )
 

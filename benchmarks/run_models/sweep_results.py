@@ -64,6 +64,7 @@ def make_run_result_record(
                 "dist_hard_max": hard_cutoff,
                 "l_max": args.l_max,
                 "n_max": args.n_max,
+                "group_norm": getattr(args, "hiphop_group_norm", True),
             },
             "runtime": {},
         },
